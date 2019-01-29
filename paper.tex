@@ -1,0 +1,62 @@
+\documentclass{article}
+
+\usepackage{natbib}
+\bibliographystyle{abbrvnat}
+\begin{document}
+
+\begin{abstract}
+The Li and Stephens model is one of the key techiques underpinning modern
+genomics. The ability to solve the model exactly for large number of
+sites has made it very attractive. But it scales linearly in the number
+of samples, which is now far too slow. People are using approximations
+to address this. We introduce an algorithm that uses the succinct
+tree sequence structure that solves the Li and Stephens model exactly
+in logarithmic time (under certain assumptions about the structure
+of the trees). We show how this algorithm out-performs existing implementations
+and enables applications in the soon-to-be available megasample data sets.
+
+\end{abstract}
+
+
+\section{Introduction}
+
+\begin{itemize}
+\item Very large datasets.
+\item Li and Stephens~\citep{li2003modeling} is important. Cite Donnely and
+Leslie. Lots of applications.
+\item Much recent interest. Method improving performance with BWT~\citep{lunter2018haplotype}
+and also \citep{rosen2018average}.
+\item Tree sequences.
+\citep{kelleher2016efficient,kelleher2018efficient,kelleher2018inferring,haller2018tree}.
+\item Paper roadmap.
+\end{itemize}
+
+\section{Li and Stephens model}
+
+\begin{itemize}
+\item Description of the LS model with diagram based on the variant matrix.
+\item Viterbi algorithm listing using variant matrix.
+\item Quick algorithm analysis.
+\item Possibly forward/backward also?
+\end{itemize}
+
+\section{Tree sequence algorithm}
+
+\begin{itemize}
+\item Brief description of the tree sequence basics. Nodes, edges, etc.
+\item Viterbi algorithm listing using tree sequences.
+\item Algorithm analysis.
+\end{itemize}
+
+\section{Performance}
+
+\begin{itemize}
+\item Comparison of LS algorithm implementations.
+\end{itemize}
+
+
+\section{Discussion}
+
+\bibliography{references}
+
+\end{document}
