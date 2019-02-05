@@ -66,22 +66,22 @@ def ls_matrix(h, H, rho, mu):
 
     n, m = H.shape
     V = np.ones(n)
-    T = np.zeros((n, m), dtype=int)
+    T = [set() for _ in range(m)]
+    I = np.zeros(m, dtype=int)
     A = 2 # Fixing to binary for now.
 
     for l in range(m):
-        i = np.argmax(V)
-        V /= V[i]
+        I[l] = np.argmax(V)
+        V /= V[I[l]]
         Vn = np.zeros(n)
         for j in range(n):
             x = (1 - rho[l] - rho[l] / n) * V[j]
             y = rho[l] / n
             if x > y:
                 p_t = x
-                T[j, l] = j
             else:
                 p_t = y
-                T[j, l] = i
+                T[l].add(j)
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
             else:
@@ -93,7 +93,10 @@ def ls_matrix(h, H, rho, mu):
     l = m - 1
     P[l] = np.argmax(V)
     while l > 0:
-        P[l - 1] = T[P[l], l]
+        j = P[l]
+        if j in T[l]:
+            j = I[l]
+        P[l - 1] = j
         l -= 1
     return P
 
@@ -129,7 +132,7 @@ def main():
     print("path  = ", path)
     print("match = ", match)
 
-    path = ls_tree_naive(h, ts, rho, mu)
+    # path = ls_tree_naive(h, ts, rho, mu)
 
 if __name__ == "__main__":
     main()

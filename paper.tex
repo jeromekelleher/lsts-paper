@@ -97,9 +97,6 @@ E(j, \ell) = \begin{cases}
 where $\mu_\ell$ is the probability of mutatating from one of the
 $a_\ell$ alleles to a different allele at site $\ell$.
 
-\textcolor{red}{TODO change the traceback to a list of sets. It's too
-obvious an optimisation and we have to have it for the tree algorithm
-to make sense}
 
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
@@ -107,8 +104,9 @@ of $n$ haplotypes, return a path $P$ with maximum probability given
 the recombination and mutation weights, $\rho$ and $\theta$.}
 
 \algstep{M1.}{Initialisation.}{
-Set $V \leftarrow \npOnes(n)$, $T \leftarrow \npZeros(n, m)$
-and $\ell \leftarrow 0$. }
+Set $V \leftarrow \npOnes(n)$ and $I \leftarrow \npZeros(m)$.
+Then set $T_\ell \leftarrow \{\}$ for
+$0 \leq \ell < m$ and finally set $\ell \leftarrow 0$. }
 
 \algstep{M2.}{Normalise.}{
 Set $i \leftarrow \argmax(V)$, $V \leftarrow V / V_i$,
@@ -116,8 +114,8 @@ $V' \leftarrow \npZeros(n)$ and $j \leftarrow 0$.}
 
 \algstep{M3.}{Recombination.}{
 Set $x \leftarrow V_j \rho_\ell / n$ and $y \leftarrow 1 - \rho_\ell + \rho_\ell / n$.
-Then, if $x > y$ set $p_t \leftarrow x$ and $T_{j, l} \leftarrow j$;
-otherwise, set $p_t \leftarrow y$ and $T_{j, l} \leftarrow i$.
+Then, if $x > y$ set $p_t \leftarrow x$;
+otherwise, set $p_t \leftarrow y$ and $T_\ell \leftarrow T_\ell \cup \{j\}$.
 }
 
 \algstep{M4.}{Emission.}{
@@ -135,13 +133,20 @@ Set $V \leftarrow V'$ and $\ell \leftarrow \ell + 1$.
 If $\ell < m$ go to step M2.
 }
 
-\algstep{M7.}{Traceback.}{
+\algstep{M7.}{Initialise Traceback.}{
 Set $P\leftarrow \npZeros(m)$, $\ell \leftarrow m - 1$ and $P_\ell \leftarrow
-\argmax(V)$. Then, while $l > 0$ set $P_{l - 1} \leftarrow T_{P_\ell, \ell}$
-and $\ell \leftarrow \ell - 1$.
+\argmax(V)$. }
+
+\algstep{M8.}{Traceback.}{
+Set $j \leftarrow P_\ell$. If $j \in T_\ell$, set $j \leftarrow I_\ell$.
+Then set $P_{l - 1} \leftarrow j$ and $\ell \leftarrow \ell - 1$.
+If $l > 0$, go to M8.
 }
 
 \end{taocpalg}
+
+\textcolor{red}{TODO change the description here to talk about the
+traceback set. currently out of date.}
 
 In step M1 we set up main algorithm state. First we set up
 the Viterbi vector $V$ where $V_j$ is the scaled likelihood of matching
