@@ -60,8 +60,9 @@ def ls_matrix(h, H, rho, mu):
     Space = O(n m) (Traceback matrix is still large)
     Time = O(n m)
     """
-    # TODO set the mutation and recombination rates appropriately following
-    # other examples in the literature.
+    # We must have a non-zero mutation rate, or we'll end up with
+    # division by zero problems.
+    assert np.all(mu > 0)
 
     n, m = H.shape
     V = np.ones(n)
@@ -69,8 +70,9 @@ def ls_matrix(h, H, rho, mu):
     A = 2 # Fixing to binary for now.
 
     for l in range(m):
-        max_V_index = np.argmax(V)
-        V /= V[max_V_index]
+        i = np.argmax(V)
+        V /= V[i]
+        print(l, h[l], V)
         Vn = np.zeros(n)
         for j in range(n):
             x = (1 - rho[l] - rho[l] / n) * V[j]
@@ -80,7 +82,7 @@ def ls_matrix(h, H, rho, mu):
                 T[j, l] = j
             else:
                 p_t = y
-                T[j, l] = max_V_index
+                T[j, l] = i
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
             else:
@@ -89,9 +91,11 @@ def ls_matrix(h, H, rho, mu):
         V = Vn
     # Traceback
     P = np.zeros(m, dtype=int)
-    P[m - 1] = max_V_index
-    for l in range(m - 1, 0, -1):
+    l = m - 1
+    P[l] = np.argmax(V)
+    while l > 0:
         P[l - 1] = T[P[l], l]
+        l -= 1
     return P
 
 
@@ -105,8 +109,8 @@ def main():
     h[5:] = 1
 
     r = 1
-    rho = np.zeros(ts.num_sites) + 1 - np.exp(r / ts.num_samples)
-    mu = np.zeros(ts.num_sites) + 0.01
+    rho = np.zeros(ts.num_sites) + 1 #1 - np.exp(r / ts.num_samples)
+    mu = np.zeros(ts.num_sites) + 0.000001
     path = ls_matrix(h, H, rho, mu)
 
     match = H[path, np.arange(ts.num_sites)]

@@ -96,8 +96,6 @@ E(j, \ell) = \begin{cases}
 where $\mu_\ell$ is the probability of mutatating from one of the
 $a_\ell$ alleles to a different allele at site $\ell$.
 
-\clearpage
-
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
 of $n$ haplotypes, return a path $P$ with maximum probability given
@@ -134,7 +132,7 @@ If $\ell < m$ go to step M2.
 
 \algstep{M7.}{Traceback.}{
 Set $P\leftarrow \npZeros(m)$, $\ell \leftarrow m - 1$ and $P_\ell \leftarrow
-\argmax(V)$. Then, while $l > 1$ set $P_{l - 1} \leftarrow T_{P_\ell, \ell}$
+\argmax(V)$. Then, while $l > 0$ set $P_{l - 1} \leftarrow T_{P_\ell, \ell}$
 and $\ell \leftarrow \ell - 1$.
 }
 
