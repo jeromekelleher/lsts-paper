@@ -2,6 +2,7 @@
 
 \usepackage{amsmath}
 \usepackage{natbib}
+\usepackage{color}
 \bibliographystyle{abbrvnat}
 
 % These macros are borrowed from TAOCPMAC.tex
@@ -96,6 +97,10 @@ E(j, \ell) = \begin{cases}
 where $\mu_\ell$ is the probability of mutatating from one of the
 $a_\ell$ alleles to a different allele at site $\ell$.
 
+\textcolor{red}{TODO change the traceback to a list of sets. It's too
+obvious an optimisation and we have to have it for the tree algorithm
+to make sense}
+
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
 of $n$ haplotypes, return a path $P$ with maximum probability given
@@ -180,6 +185,10 @@ of matching $h$ at site $m - 1$, conditioned on all of the previous sites.
 We can then use the standard HMM approach of ``tracing back'' through
 all of the sites to generate the best path $P$ for $h$ through the
 reference panel $H$.
+
+\textcolor{red}{Add diagram showing an example. We want to show the
+traceback sets, and ideally the Viterbi matrices. We want to see that
+there's actually a limited number of distinct values in there.}
 
 \section{Tree sequence algorithm}
 

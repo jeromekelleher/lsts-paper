@@ -72,7 +72,6 @@ def ls_matrix(h, H, rho, mu):
     for l in range(m):
         i = np.argmax(V)
         V /= V[i]
-        print(l, h[l], V)
         Vn = np.zeros(n)
         for j in range(n):
             x = (1 - rho[l] - rho[l] / n) * V[j]
@@ -98,6 +97,18 @@ def ls_matrix(h, H, rho, mu):
         l -= 1
     return P
 
+def ls_tree_naive(h, ts, rho, mu):
+    """
+    Simple tree based method of performing LS where we have a single tree.
+    """
+    assert ts.num_trees == 1
+    assert ts.num_sites == len(h)
+    V = np.zeros(ts.num_nodes) - 1
+    tree = ts.first()
+    V[tree.root] = 1
+
+
+
 
 def main():
     np.set_printoptions(linewidth=1000)
@@ -117,6 +128,8 @@ def main():
     print("h     = ", h)
     print("path  = ", path)
     print("match = ", match)
+
+    path = ls_tree_naive(h, ts, rho, mu)
 
 if __name__ == "__main__":
     main()
