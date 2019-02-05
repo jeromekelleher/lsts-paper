@@ -50,7 +50,7 @@ and enables applications in the soon-to-be available megasample data sets.
 
 \begin{itemize}
 \item Very large datasets.
-\item Li and Stephens~\citep{li2003modeling} is important. Cite Donnely and
+\item Li and Stephens~\citep{li2003modeling,donnelly2010coalescent} is important. Cite Donnely and
 Leslie. Lots of applications.
 \item Much recent interest. Method improving performance with BWT~\citep{lunter2018haplotype}
 and also \citep{rosen2018average}.
@@ -68,34 +68,62 @@ and also \citep{rosen2018average}.
 \item Possibly forward/backward also?
 \end{itemize}
 
+The transition probability is given by
+\[
+Q(j, k, \ell) = \begin{cases}
+1 - r_\ell + r_\ell / n & \text{if $j = k$} \\
+r_\ell / n & \text{otherwise}
+\end{cases}
+\]
+where $Q(j, k, \ell)$ is the probability of transition from haplotype $j$
+to haplotype $k$ at locus $\ell$, and $r_\ell$ is the recombination `weight'
+between site $\ell$ and $\ell - 1$. [Is this the right way around? Work out
+the corner case at 0/m.]
+
+
+[Note: there are different ways in which we can calibrate the mutation and
+recombination weights. Need to discuss this and put some bounds on what
+the weights really mean and how they interplay between mutation and
+recombination.]
+
+The emission probability is given by
+\[
+E(j, \ell) = \begin{cases}
+1 - \mu_\ell / (a_\ell - 1)  & \text{if $H_{j, \ell} = h_{\ell}$} \\
+\mu_\ell & \text{otherwise}
+\end{cases}
+\]
+where $\mu_\ell$ is the probability of mutatating from one of the
+$a_\ell$ alleles to a different allele at site $\ell$.
 
 \clearpage
 
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
 of $n$ haplotypes, return a path $P$ with maximum probability given
-the scaled recombination and mutation rates, $\rho$ and $\theta$.}
+the recombination and mutation weights, $\rho$ and $\theta$.}
 
 \algstep{M1.}{Initialisation.}{
 Set $V \leftarrow \npOnes(n)$, $T \leftarrow \npZeros(n, m)$
 and $\ell \leftarrow 0$. }
 
 \algstep{M2.}{Normalise.}{
-Set $k \leftarrow \argmax(V)$ and $V \leftarrow V / V_k$. Then set
+Set $i \leftarrow \argmax(V)$ and $V \leftarrow V / V_i$. Then set
 $V' \leftarrow \npZeros(n)$ and $j \leftarrow 0$.}
 
 \algstep{M3.}{Recombination.}{
-Set $x \leftarrow \mbox{P recomb} V_j$ and $y \leftarrow \mbox{P no recomb}$.
-Then, if $x > y$ set $p_{max} \leftarrow x$ and $T_{j, l} \leftarrow j$;
-otherwise, set $p_{max} \leftarrow y$ and $T_{j, l} \leftarrow k_{max}$.
+Set $x \leftarrow V_j \rho_\ell / n$ and $y \leftarrow 1 - \rho_\ell + \rho_\ell / n$.
+Then, if $x > y$ set $p_t \leftarrow x$ and $T_{j, l} \leftarrow j$;
+otherwise, set $p_t \leftarrow y$ and $T_{j, l} \leftarrow i$.
 }
 
 \algstep{M4.}{Emission.}{
-Set $p_{emiss} \leftarrow $ (finish).
+If $H_{j, \ell} = h_\ell$ set $p_e \leftarrow 1 - (a_\ell - 1)\mu_\ell$;
+otherwise, set $p_e \leftarrow \mu_\ell$.
 }
 
 \algstep{M5.}{Haplotype loop.}{
-Set $V'_{j} \leftarrow p_{max} p_{emiss}$ and $j \leftarrow j + 1$. Then,
+Set $V'_{j} \leftarrow p_{t} p_{e}$ and $j \leftarrow j + 1$. Then,
 if $j < n$ go to step M3.
 }
 
@@ -106,7 +134,7 @@ if $\ell < m$ go to step M2.
 
 \algstep{M7.}{Traceback.}{
 Set $P\leftarrow \npZeros(m)$, $\ell \leftarrow m - 1$ and $P_\ell \leftarrow
-\argmax(V)$. Then, while $l > 1$ set $P_{l - 1} \leftarrow T_{P_ell, \ell}$
+\argmax(V)$. Then, while $l > 1$ set $P_{l - 1} \leftarrow T_{P_\ell, \ell}$
 and $\ell \leftarrow \ell - 1$.
 }
 

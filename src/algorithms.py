@@ -51,7 +51,7 @@ def ls_matrix_n2(h, H, rho, theta):
 
     return path
 
-def ls_matrix(h, H, rho, theta):
+def ls_matrix(h, H, rho, mu):
     """
     Simple matrix based method for LS Viterbi.
 
@@ -64,33 +64,29 @@ def ls_matrix(h, H, rho, theta):
     # other examples in the literature.
 
     n, m = H.shape
-    r = 1 - np.exp(-rho / n)
-    recomb_proba = r / n
-    no_recomb_proba = 1 - r + r / n
     V = np.ones(n)
     T = np.zeros((n, m), dtype=int)
+    A = 2 # Fixing to binary for now.
 
-    d = 1 #  distance between loci
     for l in range(m):
         max_V_index = np.argmax(V)
         V /= V[max_V_index]
         Vn = np.zeros(n)
         for j in range(n):
-            x = V[j] * no_recomb_proba * d
-            y = recomb_proba * d
+            x = (1 - rho[l] - rho[l] / n) * V[j]
+            y = rho[l] / n
             if x > y:
-                max_p = x
+                p_t = x
                 T[j, l] = j
             else:
-                max_p = y
+                p_t = y
                 T[j, l] = max_V_index
-            if H[j, l] == 0 and h[l] == 1:
-                emission_p = theta # WRONG
+            if H[j, l] == h[l]:
+                p_e = 1 - (A - 1) * mu[l]
             else:
-                emission_p = int(H[j, l] == h[l])
-            Vn[j] = max_p * emission_p
+                p_e = mu[l]
+            Vn[j] = p_t * p_e
         V = Vn
-        # d = X[l + 1] - X[l]
     # Traceback
     P = np.zeros(m, dtype=int)
     P[m - 1] = max_V_index
@@ -107,8 +103,11 @@ def main():
     print(H)
     h = np.zeros(ts.num_sites, dtype=int)
     h[5:] = 1
-    # ls_matrix_n2(h, H, 1, 0)
-    path = ls_matrix(h, H, 1, 0)
+
+    r = 1
+    rho = np.zeros(ts.num_sites) + 1 - np.exp(r / ts.num_samples)
+    mu = np.zeros(ts.num_sites) + 0.01
+    path = ls_matrix(h, H, rho, mu)
 
     match = H[path, np.arange(ts.num_sites)]
     print("h     = ", h)
