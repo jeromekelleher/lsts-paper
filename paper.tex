@@ -69,12 +69,12 @@ and also \citep{rosen2018average}.
 \end{itemize}
 
 The transition probability is given by
-\[
+\begin{equation}\label{eq-recomb-proba}
 Q(j, k, \ell) = \begin{cases}
 1 - r_\ell + r_\ell / n & \text{if $j = k$} \\
 r_\ell / n & \text{otherwise}
 \end{cases}
-\]
+\end{equation}
 where $Q(j, k, \ell)$ is the probability of transition from haplotype $j$
 to haplotype $k$ at locus $\ell$, and $r_\ell$ is the recombination `weight'
 between site $\ell$ and $\ell - 1$. [Is this the right way around? Work out
@@ -87,12 +87,12 @@ the weights really mean and how they interplay between mutation and
 recombination.]
 
 The emission probability is given by
-\[
+\begin{equation}\label{eq-mut-proba}
 E(j, \ell) = \begin{cases}
 1 - \mu_\ell / (a_\ell - 1)  & \text{if $H_{j, \ell} = h_{\ell}$} \\
 \mu_\ell & \text{otherwise}
 \end{cases}
-\]
+\end{equation}
 where $\mu_\ell$ is the probability of mutatating from one of the
 $a_\ell$ alleles to a different allele at site $\ell$.
 
@@ -108,7 +108,7 @@ Set $V \leftarrow \npOnes(n)$, $T \leftarrow \npZeros(n, m)$
 and $\ell \leftarrow 0$. }
 
 \algstep{M2.}{Normalise.}{
-Set $i \leftarrow \argmax(V)$ and $V \leftarrow V / V_i$. Then set
+Set $i \leftarrow \argmax(V)$, $V \leftarrow V / V_i$,
 $V' \leftarrow \npZeros(n)$ and $j \leftarrow 0$.}
 
 \algstep{M3.}{Recombination.}{
@@ -123,13 +123,13 @@ otherwise, set $p_e \leftarrow \mu_\ell$.
 }
 
 \algstep{M5.}{Haplotype loop.}{
-Set $V'_{j} \leftarrow p_{t} p_{e}$ and $j \leftarrow j + 1$. Then,
-if $j < n$ go to step M3.
+Set $V'_{j} \leftarrow p_{t} p_{e}$ and $j \leftarrow j + 1$.
+If $j < n$ go to step M3.
 }
 
 \algstep{M6.}{Site loop.}{
-Set $V \leftarrow V'_{j}$ and $\ell \leftarrow \ell + 1$. Then,
-if $\ell < m$ go to step M2.
+Set $V \leftarrow V'$ and $\ell \leftarrow \ell + 1$.
+If $\ell < m$ go to step M2.
 }
 
 \algstep{M7.}{Traceback.}{
@@ -140,6 +140,48 @@ and $\ell \leftarrow \ell - 1$.
 
 \end{taocpalg}
 
+In step M1 we set up main algorithm state. First we set up
+the Viterbi vector $V$ where $V_j$ is the scaled likelihood of matching
+with haplotype $j$ at the previous site. We also setup the traceback matrix
+$T$, where $T_{j, \ell}$ encodes the most likely haplotype to copy from at site
+$\ell - 1$ assuming that we are copying from haplotype $j$ at site $\ell$.
+Finally, we set the site index variable $\ell$ to start iterating from the
+left of the sequence.
+
+Step M2 first normalises the Viterbi vector $V$ by finding the index $i$
+of the most likely haplotype and then dividing all other values by this. We
+then create the Viterbi vector for the current site $V'$, and begin
+iterating over the haplotypes by setting $j$ to zero. Step M3 computes
+the probabilyt of recombination, and is the heart of the LS algorithm.
+We begin by setting $x$ to likelihood of copying from the current
+haplotype without recombination, which is given by the Viterbi value
+for haplotype $j$ from the previous site multiplied by the
+probability of no recombination in \eqref{eq-recomb-proba}. We also
+compute the probability of recombining away from haplotype $j$
+to the best haplotype at the previous site, $i$. As we have already
+rescaled $V$ such that $V_i = 1$, we know that this probability is
+simply the probability of recombination \eqref{eq-recomb-proba}. Then,
+if the probability of not recombining is larger than the probability
+of recombining, we set the transition probability $p_t$ to $x$
+and update the traceback matrix to note that we should stay on haploytype
+$j$ at the current site (should be already be copying from haplotype $j$).
+Otherwise, if the probability of recombination is greater, then we set the
+transition probability accordingly and update $T_{j, \ell}$ so that we
+transition to best haplotype $i$ at the previous site if we are already
+copying from haplotype $j$.
+
+Step M4 then computes the emission probability for the haplotype $j$
+at the current site. [EXPLAIN] Steps M5 and M6 then complete the loops
+for sites and haplotypes, respectively, after updating the Viterbi
+vectors $V$ and $V'$.
+
+When we get to step M7 we have completed the forward iteration over
+all $m$ sites, and considered each of the $n$ haplotypes at each site.
+The Viterbi vector $V$ contains the probabality of each of the haplotypes
+of matching $h$ at site $m - 1$, conditioned on all of the previous sites.
+We can then use the standard HMM approach of ``tracing back'' through
+all of the sites to generate the best path $P$ for $h$ through the
+reference panel $H$.
 
 \section{Tree sequence algorithm}
 
