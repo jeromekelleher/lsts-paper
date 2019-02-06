@@ -1,9 +1,13 @@
 \documentclass{article}
 
 \usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{amsfonts}
 \usepackage{natbib}
 \usepackage{color}
 \bibliographystyle{abbrvnat}
+
+\newtheorem{lemma}{Lemma}
 
 % These macros are borrowed from TAOCPMAC.tex
 \newcommand{\slug}{\hbox{\kern1.5pt\vrule width2.5pt height6pt depth1.5pt\kern1.5pt}}
@@ -101,21 +105,23 @@ $a_\ell$ alleles to a different allele at site $\ell$.
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
 of $n$ haplotypes, return a path $P$ with maximum probability given
-the recombination and mutation weights, $\rho$ and $\theta$.}
+the recombination and mutation weights, $\rho$ and $\mu$}
 
 \algstep{M1.}{Initialisation.}{
-Set $V \leftarrow \npOnes(n)$ and $I \leftarrow \npZeros(m)$.
+Set $V \leftarrow \npOnes(n)$, $I \leftarrow \npZeros(m)$ and
+$P\leftarrow \npZeros(m)$.
 Then set $T_\ell \leftarrow \{\}$ for
 $0 \leq \ell < m$ and finally set $\ell \leftarrow 0$. }
 
 \algstep{M2.}{Normalise.}{
-Set $i \leftarrow \argmax(V)$, $V \leftarrow V / V_i$,
-$V' \leftarrow \npZeros(n)$ and $j \leftarrow 0$.}
+Set $I_\ell \leftarrow \argmax(V)$, $V \leftarrow V / V_{I_\ell}$,
+$V' \leftarrow \npZeros(n)$, $p_{\neq} \leftarrow \rho_\ell / n$
+and $j \leftarrow 0$.}
 
-\algstep{M3.}{Recombination.}{
-Set $x \leftarrow V_j \rho_\ell / n$ and $y \leftarrow 1 - \rho_\ell + \rho_\ell / n$.
-Then, if $x > y$ set $p_t \leftarrow x$;
-otherwise, set $p_t \leftarrow y$ and $T_\ell \leftarrow T_\ell \cup \{j\}$.
+\algstep{M3.}{Transition.}{
+Set $p_t \leftarrow  V_j(1 - \rho_\ell + \rho_\ell / n)$.
+Then, if $p_{\neq} > p_t $ set $p_t \leftarrow p_{\neq}$
+and $T_\ell \leftarrow T_\ell \cup \{j\}$.
 }
 
 \algstep{M4.}{Emission.}{
@@ -134,7 +140,7 @@ If $\ell < m$ go to step M2.
 }
 
 \algstep{M7.}{Initialise Traceback.}{
-Set $P\leftarrow \npZeros(m)$, $\ell \leftarrow m - 1$ and $P_\ell \leftarrow
+Set  $\ell \leftarrow m - 1$ and $P_\ell \leftarrow
 \argmax(V)$. }
 
 \algstep{M8.}{Traceback.}{
@@ -193,7 +199,9 @@ reference panel $H$.
 
 \textcolor{red}{Add diagram showing an example. We want to show the
 traceback sets, and ideally the Viterbi matrices. We want to see that
-there's actually a limited number of distinct values in there.}
+there's actually a limited number of distinct values in there.
+It's not true in general that we have only 3 distinct values---this arises
+in the special case of equal recombination rates and with rare mutation}
 
 \section{Tree sequence algorithm}
 

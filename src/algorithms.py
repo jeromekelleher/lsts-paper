@@ -74,18 +74,15 @@ def ls_matrix(h, H, rho, mu):
         I[l] = np.argmax(V)
         V /= V[I[l]]
         Vn = np.zeros(n)
+        p_neq = rho[l] / n
         for j in range(n):
-            x = (1 - rho[l] - rho[l] / n) * V[j]
-            y = rho[l] / n
-            if x > y:
-                p_t = x
-            else:
-                p_t = y
+            p_t = (1 - rho[l] - rho[l] / n) * V[j]
+            if p_neq > p_t:
+                p_t = p_neq
                 T[l].add(j)
+            p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
-            else:
-                p_e = mu[l]
             Vn[j] = p_t * p_e
         V = Vn
     # Traceback
@@ -100,6 +97,55 @@ def ls_matrix(h, H, rho, mu):
         l -= 1
     return P
 
+
+def in_sorted(values, j):
+    # Take advantage of the fact that the numpy array is sorted.
+    ret = False
+    index = np.searchsorted(values, j)
+    if index < values.shape[0]:
+        ret = values[index] == j
+    return ret
+
+
+def ls_matrix_vectorised(h, H, rho, mu):
+    # We must have a non-zero mutation rate, or we'll end up with
+    # division by zero problems.
+    assert np.all(mu > 0)
+
+    n, m = H.shape
+    V = np.ones(n)
+    T = [None for _ in range(m)]
+    I = np.zeros(m, dtype=int)
+    A = 2 # Fixing to binary for now.
+
+    for l in range(m):
+        I[l] = np.argmax(V)
+        V /= V[I[l]]
+        # Transition
+        p_neq = rho[l] / n
+        p_t = (1 - rho[l] - rho[l] / n) * V
+        recombinations = np.where(p_neq > p_t)[0]
+        p_t[recombinations] = p_neq
+        T[l] = recombinations
+        # Emission
+        p_e = np.zeros(n) + mu[l]
+        index = H[:, l] == h[l]
+        p_e[index] = 1 - (A - 1) * mu[l]
+        V = p_t * p_e
+
+    # Traceback
+    P = np.zeros(m, dtype=int)
+    l = m - 1
+    P[l] = np.argmax(V)
+    while l > 0:
+        j = P[l]
+        if in_sorted(T[l], j):
+            j = I[l]
+        P[l - 1] = j
+        l -= 1
+    return P
+
+
 def ls_tree_naive(h, ts, rho, mu):
     """
     Simple tree based method of performing LS where we have a single tree.
@@ -109,6 +155,8 @@ def ls_tree_naive(h, ts, rho, mu):
     V = np.zeros(ts.num_nodes) - 1
     tree = ts.first()
     V[tree.root] = 1
+    for site in tree.sites():
+        assert len(site.mutations) == 1
 
 
 
@@ -116,21 +164,33 @@ def ls_tree_naive(h, ts, rho, mu):
 def main():
     np.set_printoptions(linewidth=1000)
 
-    ts = msprime.simulate(10, recombination_rate=1, mutation_rate=2, random_seed=2)
+    ts = msprime.simulate(25, recombination_rate=1, mutation_rate=2,
+            random_seed=2, length=10)
+    # ts = msprime.simulate(10, recombination_rate=0, mutation_rate=2, random_seed=2)
     H = ts.genotype_matrix().T
-    print(H)
+    print("Shape = ", H.shape)
     h = np.zeros(ts.num_sites, dtype=int)
-    h[5:] = 1
+    h[ts.num_sites // 2:] = 1
+    # h = H[0]
+    # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+
 
     r = 1
-    rho = np.zeros(ts.num_sites) + 1 #1 - np.exp(r / ts.num_samples)
-    mu = np.zeros(ts.num_sites) + 0.000001
-    path = ls_matrix(h, H, rho, mu)
-
+    # rho = np.zeros(ts.num_sites) + 1
+    mu = np.zeros(ts.num_sites) + 1e-3
+    np.random.seed(1)
+    rho = np.random.random(ts.num_sites)
+    # mu = np.random.random(ts.num_sites) #* 0.000001
+    # path = ls_matrix(h, H, rho, mu)
+    path = ls_matrix_vectorised(h, H, rho, mu)
+    # assert np.all(path == path2)
+    # print("p1", path)
+    # print("p2", path2)
     match = H[path, np.arange(ts.num_sites)]
     print("h     = ", h)
     print("path  = ", path)
     print("match = ", match)
+    print("eq    = ", np.all(h == match))
 
     # path = ls_tree_naive(h, ts, rho, mu)
 
