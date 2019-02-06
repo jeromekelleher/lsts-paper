@@ -115,11 +115,10 @@ $0 \leq \ell < m$ and finally set $\ell \leftarrow 0$. }
 
 \algstep{M2.}{Normalise.}{
 Set $I_\ell \leftarrow \argmax(V)$, $V \leftarrow V / V_{I_\ell}$,
-$V' \leftarrow \npZeros(n)$, $p_{\neq} \leftarrow \rho_\ell / n$
-and $j \leftarrow 0$.}
+$p_{\neq} \leftarrow \rho_\ell / n$ and $j \leftarrow 0$.}
 
 \algstep{M3.}{Transition.}{
-Set $p_t \leftarrow  V_j(1 - \rho_\ell + \rho_\ell / n)$.
+Set $p_t \leftarrow  (1 - \rho_\ell + \rho_\ell / n)V_j$.
 Then, if $p_{\neq} > p_t $ set $p_t \leftarrow p_{\neq}$
 and $T_\ell \leftarrow T_\ell \cup \{j\}$.
 }
@@ -130,12 +129,12 @@ otherwise, set $p_e \leftarrow \mu_\ell$.
 }
 
 \algstep{M5.}{Haplotype loop.}{
-Set $V'_{j} \leftarrow p_{t} p_{e}$ and $j \leftarrow j + 1$.
+Set $V_{j} \leftarrow p_{t} p_{e}$ and $j \leftarrow j + 1$.
 If $j < n$ go to step M3.
 }
 
 \algstep{M6.}{Site loop.}{
-Set $V \leftarrow V'$ and $\ell \leftarrow \ell + 1$.
+Set $\ell \leftarrow \ell + 1$.
 If $\ell < m$ go to step M2.
 }
 
