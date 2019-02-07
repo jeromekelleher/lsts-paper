@@ -2,6 +2,7 @@
 Direct implementations of the algorithms in the paper.
 """
 import itertools
+import concurrent.futures
 
 import msprime
 import tskit
@@ -181,10 +182,12 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
     A = 2 # Must be biallelic
     n, m  = ts.num_samples, ts.num_sites
     tree = ts.first()
-    U = set()
-    for u in ts.samples():
-        L[u] = 1
-        U.add(u)
+    L[tree.root] = 1
+    U = {tree.root}
+    # U = set()
+    # for u in ts.samples():
+    #     L[u] = 1
+    #     U.add(u)
     for site in tree.sites():
         assert len(U) > 0
         assert len(site.mutations) == 1
@@ -201,30 +204,21 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
             V_matrix[site.id] = V
         # print(site.id, h[site.id], V)
 
-        # Add an L node for the mutation
-        # u = mutation.node
-        # print("Adding mutation", u, "to ", U)
-        # while L[u] == Lambda:
-        #     u = tree.parent(u)
-        # L[mutation.node] = L[u]
-        # U.add(mutation.node)
-
         l = site.id
         # print(l, U, L)
         # Find max likelihood and normalise
         I[l] = max(U, key=lambda u: L[u])
         max_L = L[I[l]]
-
-        # print("Site", l, "max_l = ", max_L)
-        # node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
-        # for u in tree.samples():
-        #     if u not in node_labels:
-        #         node_labels[u] = "{}      ".format(u)
-        # print(tree.draw(format="unicode", node_labels=node_labels))
-        # print("mutation = ", mutation.node, "state = ", h[l])
-
         for u in U:
             L[u] /= max_L
+
+        u = mutation.node
+        while u != tskit.NULL and L[u] == Lambda:
+            u = tree.parent(u)
+        # If there is no likelihood in this part of the tree we assign likelihood
+        # of zero to the mutation node.
+        L[mutation.node] = 0 if u == tskit.NULL else L[u]
+        U.add(mutation.node)
 
         p_neq = rho[l] / n
         for u in U:
@@ -243,41 +237,47 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
             # print(l, u, p_e, h[l], state)
             L[u] = p_t * p_e
 
-        # # compress the likelihoods
-        # Up = set()
-        # for u in U:
-        #     v = tree.parent(u)
-        #     while v != tskit.NULL and L[v] == Lambda:
-        #         v = tree.parent(v)
-        #     if v != tskit.NULL and L[v] == L[u]:
-        #         # u has a direct ancestor with the same value, so we can
-        #         # compress it out.
-        #         L[u] = Lambda
-        #     else:
-        #         Up.add(u)
-        # U = Up
 
-        # # Filter out any internal nodes whose likelihoods don't apply to
-        # # any samples.
-        # U = set()
-        # num_samples = 0
-        # N = {u: tree.num_samples(u) for u in Up}
-        # for u in sorted(Up, key=lambda u: -tree.time(u)):
-        #     v = tree.parent(u)
-        #     while v != tskit.NULL and L[v] == Lambda:
-        #         v = tree.parent(v)
-        #     if v != Lambda:
-        #         N[v] -= N[u]
-        #     print("Checking for ", u, " n = ", N[u], "v = ", v, ", N[v] = ",
-        #             N[v] if v != -1 else "")
+        # compress the likelihoods
+        Up = set()
+        for u in U:
+            v = tree.parent(u)
+            while v != tskit.NULL and L[v] == Lambda:
+                v = tree.parent(v)
+            if v != tskit.NULL and L[v] == L[u]:
+                # u has a direct ancestor with the same value, so we can
+                # compress it out.
+                L[u] = Lambda
+            else:
+                Up.add(u)
+        # Filter out any internal nodes whose likelihoods don't apply to
+        # any samples.
+        U = set()
+        num_samples = 0
+        N = {u: tree.num_samples(u) for u in Up}
+        for u in sorted(Up, key=lambda u: -tree.time(u)):
+            v = tree.parent(u)
+            while v != tskit.NULL and L[v] == Lambda:
+                v = tree.parent(v)
+            if v != Lambda:
+                N[v] -= N[u]
+            # print("Checking for ", u, " n = ", N[u], "v = ", v, ", N[v] = ",
+            #         N[v] if v != -1 else "")
         # print("Done:", N)
-        # for u, count in N.items():
-        #     if count > 0:
-        #         U.add(u)
-        #     else:
-        #         L[u] = Lambda
+        for u, count in N.items():
+            if count > 0:
+                U.add(u)
+            else:
+                L[u] = Lambda
 
-        # # assert sum(N.values()) == ts.num_samples
+        assert sum(N.values()) == ts.num_samples
+
+        # print("Site ", l, "mutation = ", mutation.node)
+        # node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
+        # for u in tree.samples():
+        #     if u not in node_labels:
+        #         node_labels[u] = "{}      ".format(u)
+        # print(tree.draw(format="unicode", node_labels=node_labels))
 
         # for u in sorted(Up, key=lambda u: tree.time(u)):
         #     print("Checking ", u, "num_samples= ", num_samples)
@@ -352,66 +352,78 @@ def verify_tree_algorithm(ts):
         V_matrix = np.zeros((ts.num_sites, ts.num_samples))
         matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
         tree_path = ls_tree_naive(h, ts, rho, mu, V_tree)
-        assert np.all(matrix_path == tree_path)
+        # assert np.all(matrix_path == tree_path)
         assert np.allclose(V_tree, V_matrix)
 
+
+def verify_worker(work):
+    n, length = work
+    ts = msprime.simulate(n, recombination_rate=0, mutation_rate=2,
+            random_seed=12, length=length)
+    verify_tree_algorithm(ts)
+    return ts.num_samples, ts.num_sites
+
+
 def verify():
-    for n in [3, 5, 20, 50]:
-        for length in [1, 10, 100]:
-            ts = msprime.simulate(n, recombination_rate=0, mutation_rate=2,
-                    random_seed=12, length=length)
-            print("Verify", ts.num_samples, ts.num_sites)
-            verify_tree_algorithm(ts)
+    work = itertools.product([3, 5, 20, 50], [1, 10, 100, 500])
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        future_to_work = {executor.submit(verify_worker, w): w for w in work}
+        for future in concurrent.futures.as_completed(future_to_work):
+            n, m = future.result()
+            print("Verify n =", n, "num_sites =", m)
+
+
+def develop():
+    # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
+    #         random_seed=2, length=100)
+    ts = msprime.simulate(29, recombination_rate=0, mutation_rate=2,
+            random_seed=12, length=10.85)
+
+    H = ts.genotype_matrix().T
+    print("Shape = ", H.shape)
+    h = np.zeros(ts.num_sites, dtype=int)
+    h[ts.num_sites // 2:] = 1
+
+    h = H[0].copy()
+    h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+
+    V_tree = np.zeros((ts.num_sites, ts.num_samples))
+    V_matrix = np.zeros((ts.num_sites, ts.num_samples))
+
+    r = 1
+    # rho = np.zeros(ts.num_sites) + 1
+    # mu = np.zeros(ts.num_sites) + 0.1 #1e-30
+    np.random.seed(1)
+    rho = np.random.random(ts.num_sites)
+    mu = np.random.random(ts.num_sites) #* 0.000001
+    matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
+    path = ls_tree_naive(h, ts, rho, mu, V_tree)
+    # path = ls_matrix_vectorised(h, H, rho, mu)
+    # assert np.all(path == path2)
+    # print("p1", path)
+    # print("p2", path2)
+    match = H[path, np.arange(ts.num_sites)]
+    print("h     = ", h)
+    print("path  = ", path)
+    print("pathm = ", matrix_path)
+    print("match = ", match)
+    # print("eq    = ", np.all(h == match))
+    print("patheq= ", np.all(path == matrix_path))
+
+    # print("TREE")
+    # print(V_tree)
+    # print("MATRIX")
+    # print(V_matrix)
+    print("all close?", np.allclose(V_tree, V_matrix))
+    # print((V_tree != V_matrix).astype(int))
+
 
 def main():
     np.set_printoptions(linewidth=1000)
 
     verify()
-
-#     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
-#     #         random_seed=2, length=100)
-#     ts = msprime.simulate(15, recombination_rate=0, mutation_rate=2,
-#             random_seed=12, length=5.85)
-#     verify_tree_algorithm(ts)
-
-#     H = ts.genotype_matrix().T
-#     print("Shape = ", H.shape)
-#     h = np.zeros(ts.num_sites, dtype=int)
-#     h[ts.num_sites // 2:] = 1
-
-#     h = H[0].copy()
-#     h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
-
-#     V_tree = np.zeros((ts.num_sites, ts.num_samples))
-#     V_matrix = np.zeros((ts.num_sites, ts.num_samples))
-
-#     r = 1
-#     # rho = np.zeros(ts.num_sites) + 1
-#     # mu = np.zeros(ts.num_sites) + 0.1 #1e-30
-#     np.random.seed(1)
-#     rho = np.random.random(ts.num_sites)
-#     mu = np.random.random(ts.num_sites) #* 0.000001
-#     matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
-#     path = ls_tree_naive(h, ts, rho, mu, V_tree)
-#     # path = ls_matrix_vectorised(h, H, rho, mu)
-#     # assert np.all(path == path2)
-#     # print("p1", path)
-#     # print("p2", path2)
-#     match = H[path, np.arange(ts.num_sites)]
-#     print("h     = ", h)
-#     print("path  = ", path)
-#     print("pathm = ", matrix_path)
-#     print("match = ", match)
-#     print("eq    = ", np.all(h == match))
-#     print("patheq= ", np.all(path == matrix_path))
-
-#     print("TREE")
-#     print(V_tree)
-#     print("MATRIX")
-#     print(V_matrix)
-#     print("all close?", np.allclose(V_tree, V_matrix))
-#     print((V_tree != V_matrix).astype(int))
-
+    # develop()
 
 
 if __name__ == "__main__":
