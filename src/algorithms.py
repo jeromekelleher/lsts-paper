@@ -1,6 +1,7 @@
 """
 Direct implementations of the algorithms in the paper.
 """
+import itertools
 
 import msprime
 import tskit
@@ -101,7 +102,7 @@ def ls_matrix_vectorised(h, H, rho, mu):
     return P
 
 
-def ls_matrix(h, H, rho, mu, V_matrix):
+def ls_matrix(h, H, rho, mu, V_matrix=None):
     """
     Simple matrix based method for LS Viterbi.
 
@@ -121,9 +122,9 @@ def ls_matrix(h, H, rho, mu, V_matrix):
     A = 2 # Fixing to binary for now.
 
     for l in range(m):
-        V_matrix[l] = V
+        if V_matrix is not None:
+            V_matrix[l] = V
         I[l] = np.argmax(V)
-        print("Site ", l, "maxV = ", V[I[l]])
         V /= V[I[l]]
         p_neq = rho[l] / n
         for j in range(n):
@@ -167,7 +168,7 @@ def is_descendant(tree, u, v):
     return ret
 
 
-def ls_tree_naive(h, ts, rho, mu, V_matrix):
+def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
     """
     Simple tree based method of performing LS where we have a single tree.
     """
@@ -189,14 +190,15 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix):
         assert len(site.mutations) == 1
         mutation = site.mutations[0]
 
-        V = np.zeros(n)
-        for j in range(n):
-            v = j
-            while L[v] == Lambda:
-                v = tree.parent(v)
-            assert v != tskit.NULL
-            V[j] = L[v]
-        V_matrix[site.id] = V
+        if V_matrix is not None:
+            V = np.zeros(n)
+            for j in range(n):
+                v = j
+                while L[v] == Lambda:
+                    v = tree.parent(v)
+                assert v != tskit.NULL
+                V[j] = L[v]
+            V_matrix[site.id] = V
         # print(site.id, h[site.id], V)
 
         # Add an L node for the mutation
@@ -213,13 +215,14 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix):
         I[l] = max(U, key=lambda u: L[u])
         max_L = L[I[l]]
 
-        print("Site", l, "max_l = ", max_L)
-        node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
-        for u in tree.samples():
-            if u not in node_labels:
-                node_labels[u] = "{}      ".format(u)
-        print(tree.draw(format="unicode", node_labels=node_labels))
-        print("mutation = ", mutation.node, "state = ", h[l])
+        # print("Site", l, "max_l = ", max_L)
+        # node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
+        # for u in tree.samples():
+        #     if u not in node_labels:
+        #         node_labels[u] = "{}      ".format(u)
+        # print(tree.draw(format="unicode", node_labels=node_labels))
+        # print("mutation = ", mutation.node, "state = ", h[l])
+
         for u in U:
             L[u] /= max_L
 
@@ -295,8 +298,9 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix):
     # for site in tree.sites():
     #     print(site.id, site.mutations[0].node)
 
-    # Traceback
-    print(tree.draw(format="unicode"))
+    # # Traceback
+    # print(tree.draw(format="unicode"))
+
     P = np.zeros(m, dtype=int)
     l = m - 1
     u = max(U, key=lambda u: L[u])
@@ -317,52 +321,96 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix):
     return P
 
 
+def verify_tree_algorithm(ts):
 
+    H = ts.genotype_matrix().T
+    haplotypes = []
+    h = np.zeros(ts.num_sites, dtype=int)
+    h[ts.num_sites // 2:] = 1
+    haplotypes.append(h)
+    h = H[0].copy()
+    h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+    haplotypes.append(h)
+    haplotypes.append(H[-1][:])
+    haplotypes.append(np.zeros(ts.num_sites, dtype=np.int8))
+    haplotypes.append(np.ones(ts.num_sites, dtype=np.int8))
+    for _ in range(10):
+        h = np.random.randint(0, 2, ts.num_sites)
+        haplotypes.append(h)
+
+    rhos = [
+        np.zeros(ts.num_sites) + 1,
+        np.zeros(ts.num_sites) + 1e-20,
+        np.random.random(ts.num_sites)]
+    mus = [
+        np.zeros(ts.num_sites) + 1,
+        np.zeros(ts.num_sites) + 1e-20,
+        np.random.random(ts.num_sites)]
+
+    for h, mu, rho in itertools.product(haplotypes, mus, rhos):
+        V_tree = np.zeros((ts.num_sites, ts.num_samples))
+        V_matrix = np.zeros((ts.num_sites, ts.num_samples))
+        matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
+        tree_path = ls_tree_naive(h, ts, rho, mu, V_tree)
+        assert np.all(matrix_path == tree_path)
+        assert np.allclose(V_tree, V_matrix)
+
+def verify():
+    for n in [3, 5, 20, 50]:
+        for length in [1, 10, 100]:
+            ts = msprime.simulate(n, recombination_rate=0, mutation_rate=2,
+                    random_seed=12, length=length)
+            print("Verify", ts.num_samples, ts.num_sites)
+            verify_tree_algorithm(ts)
 
 def main():
     np.set_printoptions(linewidth=1000)
 
-    # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
-    #         random_seed=2, length=100)
-    ts = msprime.simulate(25, recombination_rate=0, mutation_rate=2,
-            random_seed=12, length=5.85)
-    H = ts.genotype_matrix().T
-    print("Shape = ", H.shape)
-    h = np.zeros(ts.num_sites, dtype=int)
-    h[ts.num_sites // 2:] = 1
+    verify()
 
-    h = H[0].copy()
-    h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+#     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
+#     #         random_seed=2, length=100)
+#     ts = msprime.simulate(15, recombination_rate=0, mutation_rate=2,
+#             random_seed=12, length=5.85)
+#     verify_tree_algorithm(ts)
 
-    V_tree = np.zeros((ts.num_sites, ts.num_samples))
-    V_matrix = np.zeros((ts.num_sites, ts.num_samples))
+#     H = ts.genotype_matrix().T
+#     print("Shape = ", H.shape)
+#     h = np.zeros(ts.num_sites, dtype=int)
+#     h[ts.num_sites // 2:] = 1
 
-    r = 1
-    # rho = np.zeros(ts.num_sites) + 1
-    # mu = np.zeros(ts.num_sites) + 0.1 #1e-30
-    np.random.seed(1)
-    rho = np.random.random(ts.num_sites)
-    mu = np.random.random(ts.num_sites) #* 0.000001
-    matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
-    path = ls_tree_naive(h, ts, rho, mu, V_tree)
-    # path = ls_matrix_vectorised(h, H, rho, mu)
-    # assert np.all(path == path2)
-    # print("p1", path)
-    # print("p2", path2)
-    match = H[path, np.arange(ts.num_sites)]
-    print("h     = ", h)
-    print("path  = ", path)
-    print("pathm = ", matrix_path)
-    print("match = ", match)
-    print("eq    = ", np.all(h == match))
-    print("patheq= ", np.all(path == matrix_path))
+#     h = H[0].copy()
+#     h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
 
-    print("TREE")
-    print(V_tree)
-    print("MATRIX")
-    print(V_matrix)
-    print("all close?", np.allclose(V_tree, V_matrix))
-    print((V_tree != V_matrix).astype(int))
+#     V_tree = np.zeros((ts.num_sites, ts.num_samples))
+#     V_matrix = np.zeros((ts.num_sites, ts.num_samples))
+
+#     r = 1
+#     # rho = np.zeros(ts.num_sites) + 1
+#     # mu = np.zeros(ts.num_sites) + 0.1 #1e-30
+#     np.random.seed(1)
+#     rho = np.random.random(ts.num_sites)
+#     mu = np.random.random(ts.num_sites) #* 0.000001
+#     matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
+#     path = ls_tree_naive(h, ts, rho, mu, V_tree)
+#     # path = ls_matrix_vectorised(h, H, rho, mu)
+#     # assert np.all(path == path2)
+#     # print("p1", path)
+#     # print("p2", path2)
+#     match = H[path, np.arange(ts.num_sites)]
+#     print("h     = ", h)
+#     print("path  = ", path)
+#     print("pathm = ", matrix_path)
+#     print("match = ", match)
+#     print("eq    = ", np.all(h == match))
+#     print("patheq= ", np.all(path == matrix_path))
+
+#     print("TREE")
+#     print(V_tree)
+#     print("MATRIX")
+#     print(V_matrix)
+#     print("all close?", np.allclose(V_tree, V_matrix))
+#     print((V_tree != V_matrix).astype(int))
 
 
 
