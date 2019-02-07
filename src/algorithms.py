@@ -76,8 +76,6 @@ def ls_matrix_vectorised(h, H, rho, mu):
     A = 2 # Fixing to binary for now.
 
     for l in range(m):
-        I[l] = np.argmax(V)
-        V /= V[I[l]]
         # Transition
         p_neq = rho[l] / n
         p_t = (1 - rho[l] - rho[l] / n) * V
@@ -89,15 +87,18 @@ def ls_matrix_vectorised(h, H, rho, mu):
         index = H[:, l] == h[l]
         p_e[index] = 1 - (A - 1) * mu[l]
         V = p_t * p_e
+        # Normalise
+        I[l] = np.argmax(V)
+        V /= V[I[l]]
 
     # Traceback
     P = np.zeros(m, dtype=int)
     l = m - 1
-    P[l] = np.argmax(V)
+    P[l] = I[l]
     while l > 0:
         j = P[l]
         if in_sorted(T[l], j):
-            j = I[l]
+            j = I[l - 1]
         P[l - 1] = j
         l -= 1
     return P
@@ -125,10 +126,11 @@ def ls_matrix(h, H, rho, mu, V_matrix=None):
     for l in range(m):
         if V_matrix is not None:
             V_matrix[l] = V
-        I[l] = np.argmax(V)
-        V /= V[I[l]]
         p_neq = rho[l] / n
         for j in range(n):
+            # NOTE Question here: Should we take into account what the best
+            # haplotype at the previous site actually was and avoid
+            # false recombinations? Does it matter?
             p_t = (1 - rho[l] - rho[l] / n) * V[j]
             if p_neq > p_t:
                 p_t = p_neq
@@ -137,18 +139,21 @@ def ls_matrix(h, H, rho, mu, V_matrix=None):
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
             V[j] = p_t * p_e
+        I[l] = np.argmax(V)
+        V /= V[I[l]]
+
     # Traceback
     P = np.zeros(m, dtype=int)
     l = m - 1
-    P[l] = np.argmax(V)
+    P[l] = I[l]
+    j = P[l]
     while l > 0:
-        j = P[l]
         if j in T[l]:
-            j = I[l]
+            print("recombine at", l, ":", j, "->", I[l - 1])
+            j = I[l - 1]
         P[l - 1] = j
         l -= 1
     return P
-
 
 
 def is_descendant(tree, u, v):
@@ -184,10 +189,7 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
     tree = ts.first()
     L[tree.root] = 1
     U = {tree.root}
-    # U = set()
-    # for u in ts.samples():
-    #     L[u] = 1
-    #     U.add(u)
+
     for site in tree.sites():
         assert len(U) > 0
         assert len(site.mutations) == 1
@@ -205,12 +207,6 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
         # print(site.id, h[site.id], V)
 
         l = site.id
-        # print(l, U, L)
-        # Find max likelihood and normalise
-        I[l] = max(U, key=lambda u: L[u])
-        max_L = L[I[l]]
-        for u in U:
-            L[u] /= max_L
 
         u = mutation.node
         while u != tskit.NULL and L[u] == Lambda:
@@ -223,6 +219,7 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
         p_neq = rho[l] / n
         for u in U:
             p_t = (1 - rho[l] - rho[l] / n) * L[u]
+            # print(l, u, p_t, p_neq, p_neq > p_t)
             T[l][u] = False
             if p_neq > p_t:
                 p_t = p_neq
@@ -236,7 +233,6 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
             # print("\tis_descenent", u, mutation.node, d, p_e)
             # print(l, u, p_e, h[l], state)
             L[u] = p_t * p_e
-
 
         # compress the likelihoods
         Up = set()
@@ -261,53 +257,31 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
                 v = tree.parent(v)
             if v != Lambda:
                 N[v] -= N[u]
-            # print("Checking for ", u, " n = ", N[u], "v = ", v, ", N[v] = ",
-            #         N[v] if v != -1 else "")
-        # print("Done:", N)
         for u, count in N.items():
             if count > 0:
                 U.add(u)
             else:
                 L[u] = Lambda
-
         assert sum(N.values()) == ts.num_samples
 
-        # print("Site ", l, "mutation = ", mutation.node)
-        # node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
-        # for u in tree.samples():
-        #     if u not in node_labels:
-        #         node_labels[u] = "{}      ".format(u)
-        # print(tree.draw(format="unicode", node_labels=node_labels))
+        # Find max likelihood and normalise
+        I[l] = max(U, key=lambda u: (L[u], -u))
+        max_L = L[I[l]]
+        for u in U:
+            L[u] /= max_L
+        print(l, {u: L[u] for u in U})
 
-        # for u in sorted(Up, key=lambda u: tree.time(u)):
-        #     print("Checking ", u, "num_samples= ", num_samples)
-        #     if num_samples < ts.num_samples:
-        #         U.add(u)
-        #         num_samples += tree.num_samples(u)
-        #     else:
-        #         print("FILTERING", u)
-        #         L[u] = Lambda
-
-        # print("AFTER")
-        # node_labels = {u: "{}:{:.6g}".format(u, L[u]) for u in U}
-        # for u in tree.samples():
-        #     if u not in node_labels:
-        #         node_labels[u] = "       " # padding
-        # print(tree.draw(format="unicode", node_labels=node_labels))
-
-    # for site in tree.sites():
-    #     print(site.id, site.mutations[0].node)
-
-    # # Traceback
-    # print(tree.draw(format="unicode"))
+    # for l in range(m):
+    #     print(l, T[l])
+    # Traceback
+    print(tree.draw(format="unicode"))
 
     P = np.zeros(m, dtype=int)
     l = m - 1
-    u = max(U, key=lambda u: L[u])
-    # print("best node = ", u)
+    print("best node = ", I[l])
     # Get the first sample descendant
-    P[l] = min(tree.samples(u))
-    # print("initial = ", P[l])
+    P[l] = min(tree.samples(I[l]))
+    print("initial = ", P[l])
     while l > 0:
         u = P[l]
         P[l - 1] = u
@@ -315,8 +289,8 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
         while u != tskit.NULL and u not in T[l]:
             u = tree.parent(u)
         if T[l][u]:
-            P[l - 1] = min(tree.samples(I[l]))
-            # print("RECOMB to ", P[l - 1], "best node = ", I[l])
+            P[l - 1] = min(tree.samples(I[l - 1]))
+            print("RECOMB at", l, "to ", P[l - 1], "best node = ", I[l - 1])
         l -= 1
     return P
 
@@ -377,8 +351,8 @@ def verify():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(29, recombination_rate=0, mutation_rate=2,
-            random_seed=12, length=10.85)
+    ts = msprime.simulate(5, recombination_rate=0, mutation_rate=2,
+            random_seed=12, length=1.85)
 
     H = ts.genotype_matrix().T
     print("Shape = ", H.shape)
@@ -404,26 +378,23 @@ def develop():
     # print("p1", path)
     # print("p2", path2)
     match = H[path, np.arange(ts.num_sites)]
-    print("h     = ", h)
+    # print("h     = ", h)
     print("path  = ", path)
     print("pathm = ", matrix_path)
-    print("match = ", match)
+    # print("match = ", match)
     # print("eq    = ", np.all(h == match))
     print("patheq= ", np.all(path == matrix_path))
+    print(np.where(path != matrix_path))
 
-    # print("TREE")
-    # print(V_tree)
-    # print("MATRIX")
-    # print(V_matrix)
+
     print("all close?", np.allclose(V_tree, V_matrix))
-    # print((V_tree != V_matrix).astype(int))
 
 
 def main():
     np.set_printoptions(linewidth=1000)
 
-    verify()
-    # develop()
+    # verify()
+    develop()
 
 
 if __name__ == "__main__":
