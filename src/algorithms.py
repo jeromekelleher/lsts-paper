@@ -23,9 +23,15 @@ class CairoVisualiser(object):
         self.I = state["I"]
         self.V = state["V"]
         self.T = state["T"]
+        self.match = self.H[self.path, np.arange(H.shape[1])]
 
         self.width = width
         self.height = height
+
+    def __str__(self):
+        print("path = ", self.path)
+        print("match = ", self.match)
+        print("h     = ", self.h)
 
     def centre_text(self, cr, x, y, text):
         xbearing, ybearing, width, height, xadvance, yadvance = cr.text_extents(text)
@@ -66,12 +72,12 @@ class CairoVisualiser(object):
         # Fill in the text.
         cr.select_font_face(
             "Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        cr.set_font_size(10)
+        cr.set_font_size(12)
         cr.set_source_rgb(0.5, 0.5, 0.5)
+        label_x = matrix_origin[0] - cell_w + cell_w / 2
         for j in range(n):
             y = matrix_origin[1] + cell_h * j + cell_h / 2
-            x = matrix_origin[0] - cell_w + cell_w / 2
-            self.centre_text(cr, x, y, str(j))
+            self.centre_text(cr, label_x, y, str(j))
             for k in range(m):
                 x = matrix_origin[0] + cell_w * k + cell_w / 2
                 self.centre_text(cr, x, y, str(self.H[j, k]))
@@ -93,16 +99,27 @@ class CairoVisualiser(object):
             cr.line_to(x, y)
         cr.stroke()
 
+        # Draw the query string mismatches
+        cr.set_source_rgb(0.5, 0.5, 0.5)
+        for k in range(m):
+            if self.match[k] != self.h[k]:
+                x = matrix_origin[0] + cell_w * k
+                y = matrix_origin[1] - 2 * cell_h
+                cr.rectangle(x, y, cell_w, cell_h)
+                cr.fill()
+
         # Draw the query string
+        cr.set_source_rgb(0, 0, 0)
+        for k in range(m):
+            x = matrix_origin[0] + cell_w * k + cell_w / 2
+            y = matrix_origin[1] - 1.5 * cell_h
+            self.centre_text(cr, x, y, str(self.h[k]))
+
         for k in range(m + 1):
             x = matrix_origin[0] + cell_w * k
             cr.move_to(x, matrix_origin[1] - cell_h)
             y = matrix_origin[1] - 2 * cell_h
             cr.line_to(x, y)
-            if k < m:
-                x = matrix_origin[0] + cell_w * k + cell_w / 2
-                y = matrix_origin[1] - 1.5 * cell_h
-                self.centre_text(cr, x, y, str(self.h[k]))
 
         for y in [matrix_origin[1] - cell_h, matrix_origin[1] - 2 * cell_h]:
             cr.move_to(matrix_origin[0], y)
@@ -114,11 +131,55 @@ class CairoVisualiser(object):
         cr.set_line_width(2)
         cr.set_source_rgb(1, 0, 0)
         for k in range(m):
-            j = self.path[j]
+            j = self.path[k]
+            y = matrix_origin[1] + cell_h * j + cell_h / 2
+            x = matrix_origin[0] + cell_w * k
+            cr.rectangle(x, y, cell_w, 1)
+            cr.stroke()
+
+        # Draw the highest proba cells.
+        cr.set_line_width(3)
+        cr.set_source_rgb(0, 0, 1)
+        for k in range(m):
+            j = self.I[k]
             y = matrix_origin[1] + cell_h * j
             x = matrix_origin[0] + cell_w * k
             cr.rectangle(x, y, cell_w, cell_h)
             cr.stroke()
+
+        # Draw the recombination needed cells
+        cr.set_line_width(2)
+        cr.set_source_rgb(0, 1, 0)
+        for k in range(m):
+            for j in self.T[k]:
+                y = matrix_origin[1] + cell_h * j
+                x = matrix_origin[0] + cell_w * k
+                cr.rectangle(x, y, cell_w, cell_h)
+                cr.stroke()
+
+        # Draw the mutation and recombinations weights
+        cr.set_line_width(2)
+        rho_y = matrix_origin[1] + cell_h * (n + 0.5)
+        mu_y = matrix_origin[1] + cell_h * (n + 1.5)
+        for k in range(m):
+            x = matrix_origin[0] + k * cell_w
+            v = self.rho[k]
+            cr.rectangle(x, rho_y, cell_w, cell_h)
+            cr.set_source_rgb(0, 0, 0)
+            cr.stroke_preserve()
+            cr.set_source_rgb(v, v, v)
+            cr.fill()
+
+            v = self.mu[k]
+            cr.rectangle(x, mu_y, cell_w, cell_h)
+            cr.set_source_rgb(0, 0, 0)
+            cr.stroke_preserve()
+            cr.set_source_rgb(v, v, v)
+            cr.fill()
+
+        cr.set_source_rgb(0, 0, 0)
+        self.centre_text(cr, label_x, mu_y + cell_h / 2, "μ")
+        self.centre_text(cr, label_x, rho_y + cell_h / 2, "ρ")
 
         surface.write_to_png(output_file)
 
@@ -467,27 +528,28 @@ def verify():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(15, recombination_rate=0, mutation_rate=2,
-            random_seed=12, length=1.85)
+    ts = msprime.simulate(30, recombination_rate=4, mutation_rate=2,
+            random_seed=13, length=2.0)
 
     H = ts.genotype_matrix().T
     print("Shape = ", H.shape)
     h = np.zeros(ts.num_sites, dtype=int)
     h[ts.num_sites // 2:] = 1
 
-    h = H[0].copy()
-    h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
-
-    r = 1
-    # rho = np.zeros(ts.num_sites) + 1
-    # mu = np.zeros(ts.num_sites) + 0.01 #1e-30
+    # h = H[0].copy()
+    # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+    h = H[-1]
+    H = H[:-1]
+    rho = np.zeros(ts.num_sites) + 0.1
+    mu = np.zeros(ts.num_sites) + 0.01
     np.random.seed(1)
-    rho = np.random.random(ts.num_sites)
-    mu = np.random.random(ts.num_sites) * 0.000001
+    # rho = np.random.random(ts.num_sites)
+    # mu = np.random.random(ts.num_sites) #* 0.1
     # matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
     # print(H)
 
-    viz = CairoVisualiser(h, H, rho, mu)
+    print(H.shape)
+    viz = CairoVisualiser(h, H, rho, mu, width=1800, height=1200)
     viz.draw("output.png")
 
 
