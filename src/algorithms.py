@@ -3,10 +3,153 @@ Direct implementations of the algorithms in the paper.
 """
 import itertools
 import concurrent.futures
+import math
+import colorsys
 
 import msprime
 import tskit
 import numpy as np
+import cairo
+
+class CairoVisualiser(object):
+
+    def __init__(self, h, H, rho, mu, width=800, height=600):
+        self.h = h
+        self.H = H
+        self.rho = rho
+        self.mu = mu
+
+        self.path, state = ls_matrix(h, H, rho, mu, return_internal=True)
+        self.I = state["I"]
+        self.V = state["V"]
+        self.T = state["T"]
+
+        self.width = width
+        self.height = height
+
+    def centre_text(self, cr, x, y, text):
+        xbearing, ybearing, width, height, xadvance, yadvance = cr.text_extents(text)
+        cr.move_to(x + 0.5 - xbearing - width / 2, y + 0.5 - ybearing - height / 2)
+        cr.show_text(text)
+
+    def draw(self, output_file):
+        n, m = self.H.shape
+        w = self.width
+        h = self.height
+        f_w = 0.9
+        f_h = 0.7
+        cell_w = w * f_w / m
+        cell_h = h * f_h / n
+        matrix_origin = (w - w * f_w) / 2, (h - h * f_h) / 2
+
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr = cairo.Context(surface)
+        # Transform to normal cartesian coordinate system
+        # TODO be nice to use this, but it inverts the text as well.
+        # cr.transform(cairo.Matrix(yy=-1, y0=h))
+
+        # Set a background color
+        cr.save()
+        cr.set_source_rgb(1.0, 1.0, 1.0)
+        cr.paint()
+        cr.restore()
+
+        for j in range(n):
+            y = matrix_origin[1] + cell_h * j
+            for k in range(m):
+                x = matrix_origin[0] + cell_w * k
+                hsv = (0.5, 0.85, self.V[k, j])
+                cr.set_source_rgb(*colorsys.hsv_to_rgb(*hsv))
+                cr.rectangle(x, y, cell_w, cell_h)
+                cr.fill()
+
+        # Fill in the text.
+        cr.select_font_face(
+            "Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(10)
+        cr.set_source_rgb(0.5, 0.5, 0.5)
+        for j in range(n):
+            y = matrix_origin[1] + cell_h * j + cell_h / 2
+            x = matrix_origin[0] - cell_w + cell_w / 2
+            self.centre_text(cr, x, y, str(j))
+            for k in range(m):
+                x = matrix_origin[0] + cell_w * k + cell_w / 2
+                self.centre_text(cr, x, y, str(self.H[j, k]))
+
+        # Draw the grid
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        cr.set_line_width(2)
+        for j in range(n + 1):
+            y = matrix_origin[1] + cell_h * j
+            cr.move_to(matrix_origin[0], y)
+            x = matrix_origin[0] + cell_w * m
+            cr.line_to(x, y)
+        cr.stroke()
+
+        for k in range(m + 1):
+            x = matrix_origin[0] + cell_w * k
+            cr.move_to(x, matrix_origin[1])
+            y = matrix_origin[1] + cell_h * n
+            cr.line_to(x, y)
+        cr.stroke()
+
+        # Draw the query string
+        for k in range(m + 1):
+            x = matrix_origin[0] + cell_w * k
+            cr.move_to(x, matrix_origin[1] - cell_h)
+            y = matrix_origin[1] - 2 * cell_h
+            cr.line_to(x, y)
+            if k < m:
+                x = matrix_origin[0] + cell_w * k + cell_w / 2
+                y = matrix_origin[1] - 1.5 * cell_h
+                self.centre_text(cr, x, y, str(self.h[k]))
+
+        for y in [matrix_origin[1] - cell_h, matrix_origin[1] - 2 * cell_h]:
+            cr.move_to(matrix_origin[0], y)
+            x = matrix_origin[0] + cell_w * m
+            cr.line_to(x, y)
+        cr.stroke()
+
+        # Draw the path
+        cr.set_line_width(2)
+        cr.set_source_rgb(1, 0, 0)
+        for k in range(m):
+            j = self.path[j]
+            y = matrix_origin[1] + cell_h * j
+            x = matrix_origin[0] + cell_w * k
+            cr.rectangle(x, y, cell_w, cell_h)
+            cr.stroke()
+
+        surface.write_to_png(output_file)
+
+
+
+def is_descendant(tree, u, v):
+    """
+    Returns True if the specified node u is a descendent of node v. That is,
+    v is on the path to root from u.
+    """
+    ret = False
+    if v != -1:
+        w = u
+        path = []
+        while w != v and w != tskit.NULL:
+            path.append(w)
+            w = tree.parent(w)
+        # print("DESC:",v, u, path)
+        ret = w == v
+    # print("IS_DESCENDENT(", u, v, ") = ", ret)
+    return ret
+
+
+def in_sorted(values, j):
+    # Take advantage of the fact that the numpy array is sorted.
+    ret = False
+    index = np.searchsorted(values, j)
+    if index < values.shape[0]:
+        ret = values[index] == j
+    return ret
+
 
 
 def ls_matrix_n2(h, H, rho, theta):
@@ -21,26 +164,13 @@ def ls_matrix_n2(h, H, rho, theta):
     Time = O(m n^2)
     """
     n, m = H.shape
-    r = 1 - np.exp(-rho / n)
-    transition_proba = np.zeros((n, n))
-    transition_proba[:,:] = r / n
-    np.fill_diagonal(transition_proba, 1 - r + r / n)
-    # We have two observations: different (0), and the same (1).
-    # The emission probability is the same for each state.
-    emission_proba = np.array([
-        0.5 * theta / (n + theta),
-        n / (n + theta) + 0.5 * theta / (n + theta)])
-    V = np.zeros((m, n))
+    V = np.ones(n)
     T = np.zeros((m, n), dtype=int)
 
-    for j in range(n):
-        V[0, j] = (1 / n) * emission_proba[int(h[0] == H[j, 0])]
-    for l in range(1, m):
+    for l in range(m):
         for j in range(n):
-            max_p = 0
-            max_k = -1
             for k in range(n):
-                p = V[l - 1, k] * transition_proba[k, j]
+                p_t = (1 - rho[l] - rho[l] / n) * V[j]
                 if p > max_p:
                     max_p = p
                     max_k = k
@@ -53,15 +183,6 @@ def ls_matrix_n2(h, H, rho, theta):
         path[j - 1] = T[j, path[j]]
 
     return path
-
-
-def in_sorted(values, j):
-    # Take advantage of the fact that the numpy array is sorted.
-    ret = False
-    index = np.searchsorted(values, j)
-    if index < values.shape[0]:
-        ret = values[index] == j
-    return ret
 
 
 def ls_matrix_vectorised(h, H, rho, mu):
@@ -104,7 +225,7 @@ def ls_matrix_vectorised(h, H, rho, mu):
     return P
 
 
-def ls_matrix(h, H, rho, mu, V_matrix=None):
+def ls_matrix(h, H, rho, mu, return_internal=False):
     """
     Simple matrix based method for LS Viterbi.
 
@@ -123,8 +244,11 @@ def ls_matrix(h, H, rho, mu, V_matrix=None):
     I = np.zeros(m, dtype=int)
     A = 2 # Fixing to binary for now.
 
+    if return_internal:
+        V_matrix = np.zeros((m, n))
+
     for l in range(m):
-        if V_matrix is not None:
+        if return_internal:
             V_matrix[l] = V
         p_neq = rho[l] / n
         for j in range(n):
@@ -149,32 +273,17 @@ def ls_matrix(h, H, rho, mu, V_matrix=None):
     j = P[l]
     while l > 0:
         if j in T[l]:
-            print("recombine at", l, ":", j, "->", I[l - 1])
             j = I[l - 1]
         P[l - 1] = j
         l -= 1
-    return P
+
+    if return_internal:
+        return P, {"I": I, "V": V_matrix, "T": T}
+    else:
+        return P
 
 
-def is_descendant(tree, u, v):
-    """
-    Returns True if the specified node u is a descendent of node v. That is,
-    v is on the path to root from u.
-    """
-    ret = False
-    if v != -1:
-        w = u
-        path = []
-        while w != v and w != tskit.NULL:
-            path.append(w)
-            w = tree.parent(w)
-        # print("DESC:",v, u, path)
-        ret = w == v
-    # print("IS_DESCENDENT(", u, v, ") = ", ret)
-    return ret
-
-
-def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
+def ls_tree_naive(h, ts, rho, mu, return_internal=False):
     """
     Simple tree based method of performing LS where we have a single tree.
     """
@@ -190,12 +299,15 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
     L[tree.root] = 1
     U = {tree.root}
 
+    if return_internal:
+        V_matrix = np.zeros((m, n))
+
     for site in tree.sites():
         assert len(U) > 0
         assert len(site.mutations) == 1
         mutation = site.mutations[0]
 
-        if V_matrix is not None:
+        if return_internal:
             V = np.zeros(n)
             for j in range(n):
                 v = j
@@ -292,7 +404,11 @@ def ls_tree_naive(h, ts, rho, mu, V_matrix=None):
             P[l - 1] = min(tree.samples(I[l - 1]))
             print("RECOMB at", l, "to ", P[l - 1], "best node = ", I[l - 1])
         l -= 1
-    return P
+
+    if return_internal:
+        return P, {"I": I, "V": V_matrix, "T": T}
+    else:
+        return P
 
 
 def verify_tree_algorithm(ts):
@@ -322,10 +438,10 @@ def verify_tree_algorithm(ts):
         np.random.random(ts.num_sites)]
 
     for h, mu, rho in itertools.product(haplotypes, mus, rhos):
-        V_tree = np.zeros((ts.num_sites, ts.num_samples))
-        V_matrix = np.zeros((ts.num_sites, ts.num_samples))
-        matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
-        tree_path = ls_tree_naive(h, ts, rho, mu, V_tree)
+        matrix_path, m_state = ls_matrix(h, H, rho, mu, V_matrix, return_internal=True)
+        tree_path, t_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
+        V_tree = t_state["V"]
+        V_matrix = m_state["V"]
         # assert np.all(matrix_path == tree_path)
         assert np.allclose(V_tree, V_matrix)
 
@@ -351,7 +467,7 @@ def verify():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(5, recombination_rate=0, mutation_rate=2,
+    ts = msprime.simulate(15, recombination_rate=0, mutation_rate=2,
             random_seed=12, length=1.85)
 
     H = ts.genotype_matrix().T
@@ -362,32 +478,35 @@ def develop():
     h = H[0].copy()
     h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
 
-    V_tree = np.zeros((ts.num_sites, ts.num_samples))
-    V_matrix = np.zeros((ts.num_sites, ts.num_samples))
-
     r = 1
     # rho = np.zeros(ts.num_sites) + 1
-    # mu = np.zeros(ts.num_sites) + 0.1 #1e-30
+    # mu = np.zeros(ts.num_sites) + 0.01 #1e-30
     np.random.seed(1)
     rho = np.random.random(ts.num_sites)
-    mu = np.random.random(ts.num_sites) #* 0.000001
-    matrix_path = ls_matrix(h, H, rho, mu, V_matrix)
-    path = ls_tree_naive(h, ts, rho, mu, V_tree)
-    # path = ls_matrix_vectorised(h, H, rho, mu)
-    # assert np.all(path == path2)
-    # print("p1", path)
-    # print("p2", path2)
-    match = H[path, np.arange(ts.num_sites)]
-    # print("h     = ", h)
-    print("path  = ", path)
-    print("pathm = ", matrix_path)
-    # print("match = ", match)
-    # print("eq    = ", np.all(h == match))
-    print("patheq= ", np.all(path == matrix_path))
-    print(np.where(path != matrix_path))
+    mu = np.random.random(ts.num_sites) * 0.000001
+    # matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
+    # print(H)
+
+    viz = CairoVisualiser(h, H, rho, mu)
+    viz.draw("output.png")
 
 
-    print("all close?", np.allclose(V_tree, V_matrix))
+
+    # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
+    # # path = ls_matrix_vectorised(h, H, rho, mu)
+    # # assert np.all(path == path2)
+    # # print("p1", path)
+    # # print("p2", path2)
+    # match = H[path, np.arange(ts.num_sites)]
+    # # print("h     = ", h)
+    # print("path  = ", path)
+    # print("pathm = ", matrix_path)
+    # # print("match = ", match)
+    # # print("eq    = ", np.all(h == match))
+    # print("patheq= ", np.all(path == matrix_path))
+    # print(np.where(path != matrix_path))
+
+    # print("all close?", np.allclose(matrix_state["V"], tree_state["V"]))
 
 
 def main():
