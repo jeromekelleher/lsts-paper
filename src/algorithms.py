@@ -10,6 +10,8 @@ import msprime
 import tskit
 import numpy as np
 import cairo
+import pomegranate as pgt
+
 
 class CairoVisualiser(object):
 
@@ -285,6 +287,44 @@ def ls_matrix_vectorised(h, H, rho, mu):
         l -= 1
     return P
 
+def ls_forward_matrix(h, H, rho, mu):
+    """
+    Simple matrix based method for LS forward algorithm.
+    """
+    # We must have a non-zero mutation rate, or we'll end up with
+    # division by zero problems.
+    assert np.all(mu > 0)
+
+    n, m = H.shape
+    V = np.ones(n)
+    T = np.zeros((n, m), dtype=int)
+    I = np.zeros(m, dtype=int)
+    A = 2 # Fixing to binary for now.
+    F = np.zeros((n, m))
+
+    l = 0
+    for j in range(n):
+        p_e = mu[l]
+        if H[j, l] == h[l]:
+            p_e = 1 - (A - 1) * mu[l]
+        F[j, l] = p_e
+    # I[l] = np.argmax(F[:, l])
+
+    for l in range(1, m):
+        p_neq = (rho[l] / n) * F[I[l - 1], l - 1]
+        for j in range(n):
+            p_t = (1 - rho[l] - rho[l] / n) * F[j, l - 1]
+            if p_neq > p_t:
+                p_t = p_neq
+                T[j, l] = 1
+            p_e = mu[l]
+            if H[j, l] == h[l]:
+                p_e = 1 - (A - 1) * mu[l]
+            F[j, l] = p_t * p_e
+        I[l] = np.argmax(V)
+        V /= V[I[l]]
+
+
 
 def ls_matrix(h, H, rho, mu, return_internal=False):
     """
@@ -442,19 +482,19 @@ def ls_tree_naive(h, ts, rho, mu, return_internal=False):
         max_L = L[I[l]]
         for u in U:
             L[u] /= max_L
-        print(l, {u: L[u] for u in U})
+        # print(l, {u: L[u] for u in U})
 
     # for l in range(m):
     #     print(l, T[l])
     # Traceback
-    print(tree.draw(format="unicode"))
+    # print(tree.draw(format="unicode"))
 
     P = np.zeros(m, dtype=int)
     l = m - 1
-    print("best node = ", I[l])
+    # print("best node = ", I[l])
     # Get the first sample descendant
     P[l] = min(tree.samples(I[l]))
-    print("initial = ", P[l])
+    # print("initial = ", P[l])
     while l > 0:
         u = P[l]
         P[l - 1] = u
@@ -463,13 +503,86 @@ def ls_tree_naive(h, ts, rho, mu, return_internal=False):
             u = tree.parent(u)
         if T[l][u]:
             P[l - 1] = min(tree.samples(I[l - 1]))
-            print("RECOMB at", l, "to ", P[l - 1], "best node = ", I[l - 1])
+            # print("RECOMB at", l, "to ", P[l - 1], "best node = ", I[l - 1])
         l -= 1
 
     if return_internal:
         return P, {"I": I, "V": V_matrix, "T": T}
     else:
         return P
+
+def ls_pomegranate(H, rho, mu):
+    """
+    The Li and Stephens model implemented using pomegranate
+    """
+
+    n, m = H.shape
+    values = pgt.DiscreteDistribution({0: 0.5, 1: 0.5})
+    d = pgt.ConditionalProbabilityTable([
+        [0, 0, 1 - mu],
+        [0, 1, mu],
+        [1, 0, mu],
+        [1, 1, 1 - mu]], [values, values])
+    states = [pgt.State(d, name=str(j)) for j in range(n)]
+
+    transition_matrix = np.zeros((n, n)) + rho / n
+    np.fill_diagonal(transition_matrix, 1 - rho - rho / n)
+    dists = [d for _ in range(n)]
+    starts = [1/n for _ in range(n)]
+
+    model = pgt.HiddenMarkovModel.from_matrix(transition_matrix, dists, starts)
+    # model.bake()
+    return model
+
+    # model.add_states(*states)
+
+#     for j in range(n):
+#         model.add_transition(model.start, states[j], 1 / n)
+#         for k in range(n):
+#             p = rho / n
+#             if j == k:
+#                 p = 1 - rho - rho / n
+#             model.add_transition(states[j], states[k], p)
+#     model.bake()
+#     return model
+
+#     emission_proba = np.zeros((m, 2, 2))
+#     emission_proba[:, 0, 0] = 1 - mu
+#     emission_proba[:, 0, 1] = mu
+#     emission_proba[:, 1, 0] = mu
+#     emission_proba[:, 1, 1] = 1 - mu
+
+#     print(emission_proba)
+
+#     # We must have a non-zero mutation rate, or we'll end up with
+#     # division by zero problems.
+
+#     V = np.ones(n)
+#     T = [set() for _ in range(m)]
+#     I = np.zeros(m, dtype=int)
+#     A = 2 # Fixing to binary for now.
+
+#     if return_internal:
+#         V_matrix = np.zeros((m, n))
+
+#     for l in range(m):
+#         if return_internal:
+#             V_matrix[l] = V
+#         p_neq = rho[l] / n
+#         for j in range(n):
+#             # NOTE Question here: Should we take into account what the best
+#             # haplotype at the previous site actually was and avoid
+#             # false recombinations? Does it matter?
+#             p_t = (1 - rho[l] - rho[l] / n) * V[j]
+#             if p_neq > p_t:
+#                 p_t = p_neq
+#                 T[l].add(j)
+#             p_e = mu[l]
+#             if H[j, l] == h[l]:
+#                 p_e = 1 - (A - 1) * mu[l]
+#             V[j] = p_t * p_e
+#         I[l] = np.argmax(V)
+#         V /= V[I[l]]
 
 
 def verify_tree_algorithm(ts):
@@ -498,13 +611,37 @@ def verify_tree_algorithm(ts):
         np.zeros(ts.num_sites) + 1e-20,
         np.random.random(ts.num_sites)]
 
+    # print(tree.draw(format="unicode"))
     for h, mu, rho in itertools.product(haplotypes, mus, rhos):
-        matrix_path, m_state = ls_matrix(h, H, rho, mu, V_matrix, return_internal=True)
+        matrix_path, m_state = ls_matrix(h, H, rho, mu, return_internal=True)
         tree_path, t_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
         V_tree = t_state["V"]
         V_matrix = m_state["V"]
         # assert np.all(matrix_path == tree_path)
         assert np.allclose(V_tree, V_matrix)
+        for tree in ts.trees():
+            for site in tree.sites():
+                T_tree = t_state["T"][site.id]
+                T_matrix = m_state["T"][site.id]
+                S = set()
+                for u in ts.samples():
+                    v = u
+                    while v not in T_tree:
+                        v = tree.parent(v)
+                    if T_tree[v]:
+                        S.add(u)
+                assert S == T_matrix
+
+                I_tree = t_state["I"][site.id]
+                I_matrix = m_state["I"][site.id]
+                V_site = V_tree[site.id]
+                Vi = V_site[list(tree.samples(I_tree))]
+                print(I_tree, I_matrix)
+                print(Vi, V_site[I_matrix])
+
+                # print(V_tree[site.id][I_tree],
+                # print(I_matrix)
+
 
 
 def verify_worker(work):
@@ -517,18 +654,21 @@ def verify_worker(work):
 
 def verify():
     work = itertools.product([3, 5, 20, 50], [1, 10, 100, 500])
+    for w in work:
+        verify_worker(w)
+        print("Verify ", w)
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        future_to_work = {executor.submit(verify_worker, w): w for w in work}
-        for future in concurrent.futures.as_completed(future_to_work):
-            n, m = future.result()
-            print("Verify n =", n, "num_sites =", m)
+    # with concurrent.futures.ProcessPoolExecutor() as executor:
+    #     future_to_work = {executor.submit(verify_worker, w): w for w in work}
+    #     for future in concurrent.futures.as_completed(future_to_work):
+    #         n, m = future.result()
+    #         print("Verify n =", n, "num_sites =", m)
 
 
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(30, recombination_rate=4, mutation_rate=2,
+    ts = msprime.simulate(10, recombination_rate=0, mutation_rate=2,
             random_seed=13, length=2.0)
 
     H = ts.genotype_matrix().T
@@ -538,23 +678,39 @@ def develop():
 
     # h = H[0].copy()
     # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
-    h = H[-1]
-    H = H[:-1]
+    # h = H[-1]
+    # H = H[:-1]
     rho = np.zeros(ts.num_sites) + 0.1
-    mu = np.zeros(ts.num_sites) + 0.01
+    mu = np.zeros(ts.num_sites) + 1e-30 #0.01
     np.random.seed(1)
     # rho = np.random.random(ts.num_sites)
     # mu = np.random.random(ts.num_sites) #* 0.1
-    # matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
+    matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
     # print(H)
-
-    print(H.shape)
-    viz = CairoVisualiser(h, H, rho, mu, width=1800, height=1200)
-    viz.draw("output.png")
-
-
-
     # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
+
+    # h = H[0].copy()
+    model = ls_pomegranate(H, rho[0], mu[0])
+    logp, path = model.viterbi(h)
+    # print(path[gcc)
+    predict = model.predict(h, algorithm="viterbi")
+    print(predict)
+    # match = H[predict[1:], np.arange(ts.num_sites)]
+    # print(h)
+    # print(match)
+    # print(logp, path)
+    print("matrix_path:", matrix_path)
+    match = H[matrix_path, np.arange(ts.num_sites)]
+    print(match)
+
+
+    # logp, path = hmm.viterbi(h)
+    # print(logp, path)
+
+    # print(H.shape)
+    # viz = CairoVisualiser(h, H, rho, mu, width=1800, height=1200)
+    # viz.draw("output.png")
+
     # # path = ls_matrix_vectorised(h, H, rho, mu)
     # # assert np.all(path == path2)
     # # print("p1", path)
