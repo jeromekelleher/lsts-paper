@@ -303,27 +303,23 @@ def ls_forward_matrix(h, H, rho, mu):
     A = 2 # Fixing to binary for now.
     F = np.zeros((n, m))
 
-    l = 0
     for j in range(n):
-        p_e = mu[l]
-        if H[j, l] == h[l]:
-            p_e = 1 - (A - 1) * mu[l]
-        F[j, l] = p_e
-    # I[l] = np.argmax(F[:, l])
+        p_e = mu[0]
+        if H[j, 0] == h[0]:
+            p_e = 1 - (A - 1) * mu[0]
+        F[j, 0] = (1 / n) * p_e
 
     for l in range(1, m):
-        p_neq = (rho[l] / n) * F[I[l - 1], l - 1]
+        s = np.sum(F[:, l - 1])
         for j in range(n):
-            p_t = (1 - rho[l] + rho[l] / n) * F[j, l - 1]
-            if p_neq > p_t:
-                p_t = p_neq
-                T[j, l] = 1
+            p_eq = (1 - rho[l] + rho[l] / n) * F[j, l - 1]
+            p_neq = (rho[l] / n) * (s - F[j, l - 1])
+            p_t = p_eq + p_neq
             p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
             F[j, l] = p_t * p_e
-        I[l] = np.argmax(V)
-        V /= V[I[l]]
+    return F
 
 
 
@@ -561,15 +557,15 @@ def ls_hmm(H, rho, mu):
     start_prob = {j: 1 / n for j in range(n)}
 
     def trans_prob(state1, state2, site):
-        ret = rho / n
+        ret = rho[site] / n
         if state1 == state2:
-            ret = 1 - rho + rho / n
+            ret = 1 - rho[site] + rho[site] / n
         return ret
 
     def emit_prob(state, symbol, site):
-        ret = mu
+        ret = mu[site]
         if H[state, site] == symbol:
-            ret = 1 - mu
+            ret = 1 - mu[site]
         return ret
 
     model = hmm.Model(states, [0, 1], start_prob, trans_prob, emit_prob)
@@ -730,11 +726,11 @@ def verify():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(14, recombination_rate=0, mutation_rate=2,
-            random_seed=13, length=1.0)
+    ts = msprime.simulate(8, recombination_rate=0, mutation_rate=2,
+            random_seed=13, length=2.2)
 
     H = ts.genotype_matrix().T
-    print("Shape = ", H.shape)
+    # print("Shape = ", H.shape)
     h = np.zeros(ts.num_sites, dtype=int)
     h[ts.num_sites // 2:] = 1
 
@@ -749,21 +745,33 @@ def develop():
     # mu = np.random.random(ts.num_sites) #* 0.1
     matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
     # print(H)
-    # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
+    path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
 
-    # h = H[0].copy()
-    # model = ls_pomegranate(H, rho[0], mu[0])
-    # logp, path = model.viterbi(h)
-    # for p in path:
-    #     print(p[0], p[1].name)
-    # predict = model.predict(h, algorithm="viterbi")
-    model = ls_hmm(H, rho[0], mu[0])
-    hmm_path = np.array(model.decode(h))
-    print("matrix:", matrix_path)
-    print("hmm   :", hmm_path)
-    match = H[matrix_path, np.arange(ts.num_sites)]
-    print("match :", match)
-    print("h     :", h)
+    model = ls_hmm(H, rho, mu)
+
+#     hmm_path = np.array(model.decode(h))
+#     print("matrix:", matrix_path)
+#     print("hmm   :", hmm_path)
+#     match = H[matrix_path, np.arange(ts.num_sites)]
+#     print("match :", match)
+#     print("h     :", h)
+
+
+
+    F = ls_forward_matrix(h, H, rho, mu)
+    alpha = model._forward(h)
+    Fp = np.zeros_like(F)
+
+    for j in range(len(h)):
+        Fp[:, j] = [alpha[j][k] for k in range(ts.num_samples)]
+        print("site ", j)
+        print(np.array([alpha[j][k] for k in range(ts.num_samples)]))
+        print(F[:, j])
+        print()
+
+    assert np.allclose(F, Fp)
+    # print(F)
+    # print(Fp)
 
     # match = H[predict[1:], np.arange(ts.num_sites)]
     # print(h)

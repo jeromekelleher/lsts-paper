@@ -103,6 +103,15 @@ E(j, \ell) = \begin{cases}
 where $\mu_\ell$ is the probability of mutatating from one of the
 $a_\ell$ alleles to a different allele at site $\ell$.
 
+The complexity of the Viterbi and forward algorithms for general HMMs
+is $O(n^2 m$) for $n$ states and a sequence of length $m$. In the
+LS model, however, there are essentially only two types of transition:
+we either stay on the same haplotype or we recombine to any of the
+others with equal probability. This simplified structure of the HMM
+allows us to factor out an inner loop, and the complexity of the
+HMM algorithms is therefore $O(n m)$ in practise~\citep{lunter2018haplotype,
+rosen2018average}.
+
 
 \begin{taocpalg}{M}{Matrix based Li and Stephens Viterbi algorithm.
 Given a haplotype of $h$ of length $m$ and a reference panel $H$
