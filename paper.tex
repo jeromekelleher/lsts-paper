@@ -213,6 +213,31 @@ there's actually a limited number of distinct values in there.
 It's not true in general that we have only 3 distinct values---this arises
 in the special case of equal recombination rates and with rare mutation}
 
+\section{Forward algorithm}
+
+The forward probabilities $F_{j, \ell}$ are given by $F_{j, \ell} = p_t + p_e$
+where
+% TODO refer to the equation above
+\begin{equation}
+E(j, \ell) = \begin{cases}
+1 - \mu_\ell / (a_\ell - 1)  & \text{if $H_{j, \ell} = h_{\ell}$} \\
+\mu_\ell & \text{otherwise}
+\end{cases}
+\end{equation}
+and
+\[
+p_t = \left(1 - \rho_\ell + \frac{\rho_\ell}{n} \right) F_{j, \ell - 1}
++ \frac{\rho_\ell}{n} \sum_{k = 0}^{n - 1} F_{k, \ell - 1} [k \neq j]
+\]
+If we let $s_\ell = \sum_{k = 0}^{n - 1} F_{k, \ell}$, we can simplify to
+\[
+p_t = (1 - \rho_\ell)F_{j, \ell - 1} + s_\ell \frac{\rho_\ell}{n}
+\]
+
+Following~\cite{durbin1998biological}, we rescale the $F$ values to avoid
+numerical issues. [Best explained in the algorithm listing]
+
+
 \section{Tree sequence algorithm}
 
 \begin{itemize}

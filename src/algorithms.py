@@ -288,18 +288,12 @@ def ls_matrix_vectorised(h, H, rho, mu):
         l -= 1
     return P
 
-def ls_forward_matrix(h, H, rho, mu):
+
+def ls_forward_matrix_unscaled(h, H, rho, mu):
     """
     Simple matrix based method for LS forward algorithm.
     """
-    # We must have a non-zero mutation rate, or we'll end up with
-    # division by zero problems.
-    assert np.all(mu > 0)
-
     n, m = H.shape
-    V = np.ones(n)
-    T = np.zeros((n, m), dtype=int)
-    I = np.zeros(m, dtype=int)
     A = 2 # Fixing to binary for now.
     F = np.zeros((n, m))
 
@@ -312,14 +306,41 @@ def ls_forward_matrix(h, H, rho, mu):
     for l in range(1, m):
         s = np.sum(F[:, l - 1])
         for j in range(n):
-            p_eq = (1 - rho[l] + rho[l] / n) * F[j, l - 1]
-            p_neq = (rho[l] / n) * (s - F[j, l - 1])
-            p_t = p_eq + p_neq
+            p_t = F[j, l - 1] * (1 - rho[l]) + s * rho[l] / n
             p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
             F[j, l] = p_t * p_e
     return F
+
+
+def ls_forward_matrix(h, H, rho, mu):
+    """
+    Simple matrix based method for LS forward algorithm.
+    """
+    n, m = H.shape
+    A = 2 # Fixing to binary for now.
+    F = np.zeros((n, m))
+    S = np.zeros(m)
+
+    for j in range(n):
+        p_e = mu[0]
+        if H[j, 0] == h[0]:
+            p_e = 1 - (A - 1) * mu[0]
+        F[j, 0] = (1 / n) * p_e
+
+    S[0] = np.sum(F[:, 0])
+    F[:, 0] /= S[0]
+    for l in range(1, m):
+        for j in range(n):
+            p_t = F[j, l - 1] * (1 - rho[l]) + rho[l] / n
+            p_e = mu[l]
+            if H[j, l] == h[l]:
+                p_e = 1 - (A - 1) * mu[l]
+            F[j, l] = p_t * p_e
+        S[l] = np.sum(F[:, l])
+        F[:, l] /= S[l]
+    return F, S
 
 
 
@@ -509,47 +530,6 @@ def ls_tree_naive(h, ts, rho, mu, return_internal=False):
         return P
 
 
-
-# class LiStephensHMM(hmmlearn.hmm.MultinomialHMM):
-#     def __init__(self, H, rho, mu):
-#         n, m = H.shape
-#         super().__init__(n_components=n)
-
-#         transition_matrix = np.zeros((n, n)) + rho / n
-#         np.fill_diagonal(transition_matrix, 1 - rho + rho / n)
-#         emission_matrix = np.zeros((m, n, 2))
-#         for l in range(m):
-#             col = H[:, l]
-#             emission_matrix[l, col == 0, 0] = 1 - mu
-#             emission_matrix[l, col == 1, 1] = 1 - mu
-#             emission_matrix[l, col == 0, 1] = mu
-#             emission_matrix[l, col == 1, 0] = mu
-
-#         self.transmat_ = transition_matrix
-#         self.emissionprob_ = emission_matrix# [0]
-#         self.startprob_ = np.ones(n) / n
-
-    # def _check(self):
-    #     pass
-
-#     def _compute_log_likelihood(self, X):
-#         print("X = ", X)
-#         np.concatenate(X)
-
-#         return np.log(self.emissionprob_)[:, np.concatenate(X)].T
-
-# def ls_hmmlearn(H, rho, mu):
-#     hmm = LiStephensHMM(H, rho, mu)
-#     # print(hmm.transmat_)
-#     # hmm._compute_log_likelihood([H[0]])
-#     h = H[0].reshape((H.shape[1], 1))
-#     print(h)
-#     res = hmm.predict(h)
-#     print("res = ", res)
-#     # X, Z = hmm.sample(8)
-#     # print("X = ", X)
-#     # print("Z = ", Z)
-
 def ls_hmm(H, rho, mu):
 
     n, m = H.shape
@@ -570,78 +550,6 @@ def ls_hmm(H, rho, mu):
 
     model = hmm.Model(states, [0, 1], start_prob, trans_prob, emit_prob)
     return model
-
-
-def ls_pomegranate(H, rho, mu):
-    """
-    The Li and Stephens model implemented using pomegranate
-    """
-
-    n, m = H.shape
-    values = pgt.DiscreteDistribution({0: 0.5, 1: 0.5})
-    # d = pgt.ConditionalProbabilityTable([
-    d = TmpTable([
-        [0, 0, 1 - mu],
-        [0, 1, mu],
-        [1, 0, mu],
-        [1, 1, 1 - mu]], [values])
-
-    dists = [d for _ in range(n)]
-    starts = [1/n for _ in range(n)]
-
-    model = pgt.HiddenMarkovModel.from_matrix(transition_matrix, dists, starts, verbose=True)
-    return model
-
-    # model.add_states(*states)
-
-#     for j in range(n):
-#         model.add_transition(model.start, states[j], 1 / n)
-#         for k in range(n):
-#             p = rho / n
-#             if j == k:
-#                 p = 1 - rho - rho / n
-#             model.add_transition(states[j], states[k], p)
-#     model.bake()
-#     return model
-
-#     emission_proba = np.zeros((m, 2, 2))
-#     emission_proba[:, 0, 0] = 1 - mu
-#     emission_proba[:, 0, 1] = mu
-#     emission_proba[:, 1, 0] = mu
-#     emission_proba[:, 1, 1] = 1 - mu
-
-#     print(emission_proba)
-
-#     # We must have a non-zero mutation rate, or we'll end up with
-#     # division by zero problems.
-
-#     V = np.ones(n)
-#     T = [set() for _ in range(m)]
-#     I = np.zeros(m, dtype=int)
-#     A = 2 # Fixing to binary for now.
-
-#     if return_internal:
-#         V_matrix = np.zeros((m, n))
-
-#     for l in range(m):
-#         if return_internal:
-#             V_matrix[l] = V
-#         p_neq = rho[l] / n
-#         for j in range(n):
-#             # NOTE Question here: Should we take into account what the best
-#             # haplotype at the previous site actually was and avoid
-#             # false recombinations? Does it matter?
-#             p_t = (1 - rho[l] - rho[l] / n) * V[j]
-#             if p_neq > p_t:
-#                 p_t = p_neq
-#                 T[l].add(j)
-#             p_e = mu[l]
-#             if H[j, l] == h[l]:
-#                 p_e = 1 - (A - 1) * mu[l]
-#             V[j] = p_t * p_e
-#         I[l] = np.argmax(V)
-#         V /= V[I[l]]
-
 
 def verify_tree_algorithm(ts):
 
@@ -730,6 +638,7 @@ def develop():
             random_seed=13, length=2.2)
 
     H = ts.genotype_matrix().T
+    n, m = H.shape
     # print("Shape = ", H.shape)
     h = np.zeros(ts.num_sites, dtype=int)
     h[ts.num_sites // 2:] = 1
@@ -758,7 +667,17 @@ def develop():
 
 
 
-    F = ls_forward_matrix(h, H, rho, mu)
+    # F = ls_forward_matrix_unscaled(h, H, rho, mu)
+    F, S = ls_forward_matrix(h, H, rho, mu)
+
+    # FIXME
+    log_prob = np.log(np.sum(F[:, -1])) - np.sum(np.log(S))
+    print("log prob = ", log_prob)
+    print("prob = ", np.exp(log_prob))
+
+    F *= np.cumprod(S)
+    print("P = ", model.evaluate(h), np.sum(F[:, -1])) #/ np.prod(S))
+
     alpha = model._forward(h)
     Fp = np.zeros_like(F)
 
@@ -769,7 +688,11 @@ def develop():
         print(F[:, j])
         print()
 
-    assert np.allclose(F, Fp)
+    # assert np.allclose(F, Fp)
+    print("P = ", model.evaluate(h), np.sum(F[:, -1]))
+
+    # print(alpha[m - 1])
+
     # print(F)
     # print(Fp)
 
