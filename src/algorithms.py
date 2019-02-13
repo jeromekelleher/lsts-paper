@@ -10,7 +10,8 @@ import msprime
 import tskit
 import numpy as np
 import cairo
-import pomegranate as pgt
+
+import hmm
 
 
 class CairoVisualiser(object):
@@ -262,7 +263,7 @@ def ls_matrix_vectorised(h, H, rho, mu):
     for l in range(m):
         # Transition
         p_neq = rho[l] / n
-        p_t = (1 - rho[l] - rho[l] / n) * V
+        p_t = (1 - rho[l] + rho[l] / n) * V
         recombinations = np.where(p_neq > p_t)[0]
         p_t[recombinations] = p_neq
         T[l] = recombinations
@@ -313,7 +314,7 @@ def ls_forward_matrix(h, H, rho, mu):
     for l in range(1, m):
         p_neq = (rho[l] / n) * F[I[l - 1], l - 1]
         for j in range(n):
-            p_t = (1 - rho[l] - rho[l] / n) * F[j, l - 1]
+            p_t = (1 - rho[l] + rho[l] / n) * F[j, l - 1]
             if p_neq > p_t:
                 p_t = p_neq
                 T[j, l] = 1
@@ -356,7 +357,7 @@ def ls_matrix(h, H, rho, mu, return_internal=False):
             # NOTE Question here: Should we take into account what the best
             # haplotype at the previous site actually was and avoid
             # false recombinations? Does it matter?
-            p_t = (1 - rho[l] - rho[l] / n) * V[j]
+            p_t = (1 - rho[l] + rho[l] / n) * V[j]
             if p_neq > p_t:
                 p_t = p_neq
                 T[l].add(j)
@@ -431,7 +432,7 @@ def ls_tree_naive(h, ts, rho, mu, return_internal=False):
 
         p_neq = rho[l] / n
         for u in U:
-            p_t = (1 - rho[l] - rho[l] / n) * L[u]
+            p_t = (1 - rho[l] + rho[l] / n) * L[u]
             # print(l, u, p_t, p_neq, p_neq > p_t)
             T[l][u] = False
             if p_neq > p_t:
@@ -511,6 +512,70 @@ def ls_tree_naive(h, ts, rho, mu, return_internal=False):
     else:
         return P
 
+
+
+# class LiStephensHMM(hmmlearn.hmm.MultinomialHMM):
+#     def __init__(self, H, rho, mu):
+#         n, m = H.shape
+#         super().__init__(n_components=n)
+
+#         transition_matrix = np.zeros((n, n)) + rho / n
+#         np.fill_diagonal(transition_matrix, 1 - rho + rho / n)
+#         emission_matrix = np.zeros((m, n, 2))
+#         for l in range(m):
+#             col = H[:, l]
+#             emission_matrix[l, col == 0, 0] = 1 - mu
+#             emission_matrix[l, col == 1, 1] = 1 - mu
+#             emission_matrix[l, col == 0, 1] = mu
+#             emission_matrix[l, col == 1, 0] = mu
+
+#         self.transmat_ = transition_matrix
+#         self.emissionprob_ = emission_matrix# [0]
+#         self.startprob_ = np.ones(n) / n
+
+    # def _check(self):
+    #     pass
+
+#     def _compute_log_likelihood(self, X):
+#         print("X = ", X)
+#         np.concatenate(X)
+
+#         return np.log(self.emissionprob_)[:, np.concatenate(X)].T
+
+# def ls_hmmlearn(H, rho, mu):
+#     hmm = LiStephensHMM(H, rho, mu)
+#     # print(hmm.transmat_)
+#     # hmm._compute_log_likelihood([H[0]])
+#     h = H[0].reshape((H.shape[1], 1))
+#     print(h)
+#     res = hmm.predict(h)
+#     print("res = ", res)
+#     # X, Z = hmm.sample(8)
+#     # print("X = ", X)
+#     # print("Z = ", Z)
+
+def ls_hmm(H, rho, mu):
+
+    n, m = H.shape
+    states = np.arange(n)
+    start_prob = {j: 1 / n for j in range(n)}
+
+    def trans_prob(state1, state2, site):
+        ret = rho / n
+        if state1 == state2:
+            ret = 1 - rho + rho / n
+        return ret
+
+    def emit_prob(state, symbol, site):
+        ret = mu
+        if H[state, site] == symbol:
+            ret = 1 - mu
+        return ret
+
+    model = hmm.Model(states, [0, 1], start_prob, trans_prob, emit_prob)
+    return model
+
+
 def ls_pomegranate(H, rho, mu):
     """
     The Li and Stephens model implemented using pomegranate
@@ -518,20 +583,17 @@ def ls_pomegranate(H, rho, mu):
 
     n, m = H.shape
     values = pgt.DiscreteDistribution({0: 0.5, 1: 0.5})
-    d = pgt.ConditionalProbabilityTable([
+    # d = pgt.ConditionalProbabilityTable([
+    d = TmpTable([
         [0, 0, 1 - mu],
         [0, 1, mu],
         [1, 0, mu],
-        [1, 1, 1 - mu]], [values, values])
-    states = [pgt.State(d, name=str(j)) for j in range(n)]
+        [1, 1, 1 - mu]], [values])
 
-    transition_matrix = np.zeros((n, n)) + rho / n
-    np.fill_diagonal(transition_matrix, 1 - rho - rho / n)
     dists = [d for _ in range(n)]
     starts = [1/n for _ in range(n)]
 
-    model = pgt.HiddenMarkovModel.from_matrix(transition_matrix, dists, starts)
-    # model.bake()
+    model = pgt.HiddenMarkovModel.from_matrix(transition_matrix, dists, starts, verbose=True)
     return model
 
     # model.add_states(*states)
@@ -668,8 +730,8 @@ def verify():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(10, recombination_rate=0, mutation_rate=2,
-            random_seed=13, length=2.0)
+    ts = msprime.simulate(14, recombination_rate=0, mutation_rate=2,
+            random_seed=13, length=1.0)
 
     H = ts.genotype_matrix().T
     print("Shape = ", H.shape)
@@ -681,8 +743,8 @@ def develop():
     # h = H[-1]
     # H = H[:-1]
     rho = np.zeros(ts.num_sites) + 0.1
-    mu = np.zeros(ts.num_sites) + 1e-30 #0.01
-    np.random.seed(1)
+    mu = np.zeros(ts.num_sites) + 0.01
+    # np.random.seed(1)
     # rho = np.random.random(ts.num_sites)
     # mu = np.random.random(ts.num_sites) #* 0.1
     matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
@@ -690,19 +752,23 @@ def develop():
     # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
 
     # h = H[0].copy()
-    model = ls_pomegranate(H, rho[0], mu[0])
-    logp, path = model.viterbi(h)
-    # print(path[gcc)
-    predict = model.predict(h, algorithm="viterbi")
-    print(predict)
+    # model = ls_pomegranate(H, rho[0], mu[0])
+    # logp, path = model.viterbi(h)
+    # for p in path:
+    #     print(p[0], p[1].name)
+    # predict = model.predict(h, algorithm="viterbi")
+    model = ls_hmm(H, rho[0], mu[0])
+    hmm_path = np.array(model.decode(h))
+    print("matrix:", matrix_path)
+    print("hmm   :", hmm_path)
+    match = H[matrix_path, np.arange(ts.num_sites)]
+    print("match :", match)
+    print("h     :", h)
+
     # match = H[predict[1:], np.arange(ts.num_sites)]
     # print(h)
     # print(match)
     # print(logp, path)
-    print("matrix_path:", matrix_path)
-    match = H[matrix_path, np.arange(ts.num_sites)]
-    print(match)
-
 
     # logp, path = hmm.viterbi(h)
     # print(logp, path)
