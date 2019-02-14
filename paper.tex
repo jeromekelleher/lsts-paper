@@ -237,6 +237,18 @@ p_t = (1 - \rho_\ell)F_{j, \ell - 1} + s_\ell \frac{\rho_\ell}{n}
 Following~\cite{durbin1998biological}, we rescale the $F$ values to avoid
 numerical issues. [Best explained in the algorithm listing]
 
+The probability of observing $h$ under the model is then given by
+\[
+\mathbb{P}[] = \frac{\sum_{j = 0}^{n - 1} F_{j, m - 1}}{
+\prod_{\ell=0}^{m - 1} S_\ell}
+\]
+Thus, the negative log probability is
+\[
+-\log\left(\sum_{j = 0}^{n - 1} F_{j, m - 1}\right)
++ \sum_{\ell=0}^{m -1} \log S_\ell
+\]
+which can be computed accurately numerically.
+
 
 \section{Tree sequence algorithm}
 

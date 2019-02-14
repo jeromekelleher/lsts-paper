@@ -5,6 +5,10 @@ import itertools
 import concurrent.futures
 import math
 import colorsys
+import statistics
+import heapq
+
+import matplotlib.pyplot as plt
 
 import msprime
 import tskit
@@ -293,24 +297,21 @@ def ls_forward_matrix_unscaled(h, H, rho, mu):
     """
     Simple matrix based method for LS forward algorithm.
     """
+    assert rho[0] == 0
     n, m = H.shape
     A = 2 # Fixing to binary for now.
     F = np.zeros((n, m))
+    f = np.zeros(n) + 1 / n
 
-    for j in range(n):
-        p_e = mu[0]
-        if H[j, 0] == h[0]:
-            p_e = 1 - (A - 1) * mu[0]
-        F[j, 0] = (1 / n) * p_e
-
-    for l in range(1, m):
-        s = np.sum(F[:, l - 1])
+    for l in range(0, m):
+        s = np.sum(f)
         for j in range(n):
-            p_t = F[j, l - 1] * (1 - rho[l]) + s * rho[l] / n
+            p_t = f[j] * (1 - rho[l]) + s * rho[l] / n
             p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
-            F[j, l] = p_t * p_e
+            f[j] = p_t * p_e
+        F[:, l] = f
     return F
 
 
@@ -318,30 +319,168 @@ def ls_forward_matrix(h, H, rho, mu):
     """
     Simple matrix based method for LS forward algorithm.
     """
+    assert rho[0] == 0
     n, m = H.shape
     A = 2 # Fixing to binary for now.
     F = np.zeros((n, m))
     S = np.zeros(m)
+    f = np.zeros(n) + 1 / n
 
-    for j in range(n):
-        p_e = mu[0]
-        if H[j, 0] == h[0]:
-            p_e = 1 - (A - 1) * mu[0]
-        F[j, 0] = (1 / n) * p_e
-
-    S[0] = np.sum(F[:, 0])
-    F[:, 0] /= S[0]
-    for l in range(1, m):
+    for l in range(0, m):
         for j in range(n):
-            p_t = F[j, l - 1] * (1 - rho[l]) + rho[l] / n
+            p_t = f[j] * (1 - rho[l]) + rho[l] / n
             p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
-            F[j, l] = p_t * p_e
-        S[l] = np.sum(F[:, l])
-        F[:, l] /= S[l]
+            f[j] = p_t * p_e
+        S[l] = np.sum(f)
+        f /= S[l]
+        F[:, l] = f
     return F, S
 
+
+def sankoff(tree, genotypes):
+    """
+    Version of the Sankoff algorithm in which we place floating point values
+    as the observed states.
+
+    Based on treatment from Clemente et al., https://doi.org/10.1186/1471-2105-10-51
+    """
+    alleles = list(set(genotypes))
+    num_alleles = len(alleles)
+    S = np.zeros((num_alleles, tree.num_nodes))
+    infinity = 1e7  # Arbitrary big value
+    # Initialise the weights
+    for allele, u in zip(genotypes, tree.tree_sequence.samples()):
+        S[:, u] = infinity
+        S[alleles.index(allele), u] = 0
+    for p in tree.nodes(order="postorder"):
+        for i in range(num_alleles):
+            for child in tree.children(p):
+                min_w = infinity
+                for j in range(num_alleles):
+                    min_w = min(min_w, int(i != j) + S[j, child])
+                S[i, p] += min_w
+
+    f = {}
+    S_anc = {}
+    for x in tree.nodes(order="preorder"):
+        S_anc[x] = np.argmin(S[:, x])
+        i = S_anc[x]
+        min_cost = infinity
+        for j in range(num_alleles):
+            if x == tree.root:
+                trans_cost = S[j, x]
+            else:
+                trans_cost = int(i != j) + S[j, x]
+            if trans_cost < min_cost:
+                min_cost = trans_cost
+                S_anc[x] = j
+        if x == tree.root or S_anc[x] != S_anc[tree.parent(x)]:
+            f[x] = alleles[S_anc[x]]
+
+    return f
+
+
+
+def compress(tree, f):
+
+#     print("BEFORE")
+#     node_labels = {u: "        " for u in tree.samples()}
+#     for u in f:
+#         node_labels[u] = "{}:{:.8G}".format(u, f[u])
+#     print(tree.draw(format="unicode", node_labels=node_labels))
+#     # print(tree.draw(format="unicode"))
+
+    # Quantise f
+    f = {u: round(f[u], 10) for u in f}
+    V = []
+    for u in tree.tree_sequence.samples():
+        v = u
+        while v not in f:
+            v = tree.parent(v)
+        V.append(f[v])
+    # print(V)
+    f = sankoff(tree, V)
+    # print("f = ", f)
+
+    # # Cheap compress up to parent approach.
+    # fp = {}
+    # for u in f.keys():
+    #     v = tree.parent(u)
+    #     while v != tskit.NULL and v not in f:
+    #         v = tree.parent(v)
+    #     if v == tskit.NULL or not math.isclose(f[v], f[u], rel_tol=1e-6):
+    #         fp[u] = f[u]
+    # f = fp
+
+#     print("AFTER")
+#     node_labels = {u: "        " for u in tree.samples()}
+#     for u in f:
+#         node_labels[u] = "{:.8G}".format(f[u])
+#     print(tree.draw(format="unicode", node_labels=node_labels))
+
+    return f
+
+
+def ls_forward_tree(h, ts, rho, mu):
+    """
+    Forward matrix computation based on a single tree.
+    """
+
+    n, m = ts.num_samples, ts.num_sites
+    A = 2 # Fixing to binary for now.
+    F = [None for _ in range(m)]
+    S = np.zeros(m)
+    f = {u: 1 / n  for u in ts.samples()}
+
+    for tree in ts.trees():
+        for site in tree.sites():
+            assert len(site.mutations) == 1
+            mutation = site.mutations[0]
+            l = site.id
+            # TODO This probably isn't needed anymore
+            u = mutation.node
+            while u != tskit.NULL and u not in f:
+                u = tree.parent(u)
+            f[mutation.node] = 0 if u == tskit.NULL else f[u]
+            for u in f.keys():
+                p_t = f[u] * (1 - rho[l]) + rho[l] / n
+                # Assuming polarised 0/1 mutation
+                d = is_descendant(tree, u, mutation.node)
+                state = int(d)
+                p_e = mu[l]
+                if h[l] == state:
+                    p_e = 1 - (A - 1) * mu[l]
+                f[u] = p_t * p_e
+
+            f = compress(tree, f)
+
+            N = {u: tree.num_samples(u) for u in f}
+            for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+                v = tree.parent(u)
+                while v != tskit.NULL and v not in f:
+                    v = tree.parent(v)
+                if v != tskit.NULL:
+                    N[v] -= N[u]
+
+            S[l] = sum(N[u] * f[u] for u in f)
+            f = {u: f[u] / S[l] for u in f}
+            F[l] = f.copy()
+
+        # Scatter f out again for the next tree
+        fp = {}
+        for u in tree.samples():
+            v = u
+            while v not in f:
+                v = tree.parent(v)
+            fp[u] = f[v]
+        f = fp
+    # print(V)
+
+    # print(tree.draw(format="unicode", node_labels={u: str(N[u]) for u in f}))
+
+    return F, S
 
 
 def ls_matrix(h, H, rho, mu, return_internal=False):
@@ -630,12 +769,58 @@ def verify():
     #         n, m = future.result()
     #         print("Verify n =", n, "num_sites =", m)
 
+def decode_ts_matrix(ts, F_tree):
+    """
+    Decodes the specified tree encoding of the probabilities into an explicit
+    matrix.
+    """
+    F = np.zeros((ts.num_samples, ts.num_sites))
+    assert len(F_tree) == ts.num_sites
+    for tree in ts.trees():
+        for site in tree.sites():
+            f = F_tree[site.id]
+            for j, u in enumerate(ts.samples()):
+                while u not in f:
+                    u = tree.parent(u)
+                F[j, site.id] = f[u]
+    return F
+
+def plot_encoding_efficiency():
+    for n in [10, 100, 1000, 10000, 10**5]:
+        for L in [1, 10, 100, 1000]:
+            ts = msprime.simulate(
+                n, recombination_rate=0, mutation_rate=2, random_seed=13, length=L)
+            # rho = np.zeros(ts.num_sites) + 0.1
+            # mu = np.zeros(ts.num_sites) + 0.01
+            # H = ts.genotype_matrix().T
+            # h = H[0].copy()
+            # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
+
+            h = np.zeros(ts.num_sites, dtype=int)
+            h[ts.num_sites // 2:] = 1
+            np.random.seed(1)
+            rho = np.random.random(ts.num_sites)
+            mu = np.random.random(ts.num_sites) #* 0.1
+
+            rho[0] = 0
+            Ft, St = ls_forward_tree(h, ts, rho, mu)
+            X = np.array([len(f) for f in Ft])
+            Y = np.zeros_like(X)
+            for j, f in enumerate(Ft):
+                q = [round(v, 8) for v in f.values()]
+                Y[j] = len(set(q))
+            plt.plot(X)
+            plt.plot(Y, label="distinct")
+            plt.savefig("tmp/n={}_L={}.png".format(n, L))
+            plt.clf()
+            print(n, L, ts.num_sites, np.mean(X), np.mean(Y), sep="\t")
 
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(8, recombination_rate=0, mutation_rate=2,
-            random_seed=13, length=2.2)
+    ts = msprime.simulate(8, recombination_rate=2, mutation_rate=2,
+            random_seed=13, length=20.2)
+    print("num_trees = ", ts.num_trees)
 
     H = ts.genotype_matrix().T
     n, m = H.shape
@@ -645,19 +830,17 @@ def develop():
 
     # h = H[0].copy()
     # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
-    # h = H[-1]
+    h = H[-1]
     # H = H[:-1]
     rho = np.zeros(ts.num_sites) + 0.1
     mu = np.zeros(ts.num_sites) + 0.01
+
     # np.random.seed(1)
     # rho = np.random.random(ts.num_sites)
     # mu = np.random.random(ts.num_sites) #* 0.1
-    matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
+    # matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
     # print(H)
-    path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
-
-    model = ls_hmm(H, rho, mu)
-
+    # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
 #     hmm_path = np.array(model.decode(h))
 #     print("matrix:", matrix_path)
 #     print("hmm   :", hmm_path)
@@ -665,15 +848,20 @@ def develop():
 #     print("match :", match)
 #     print("h     :", h)
 
-
+    rho[0] = 0
+    model = ls_hmm(H, rho, mu)
 
     # F = ls_forward_matrix_unscaled(h, H, rho, mu)
     F, S = ls_forward_matrix(h, H, rho, mu)
+    Ft, St = ls_forward_tree(h, ts, rho, mu)
+    Ft = decode_ts_matrix(ts, Ft)
 
-    # FIXME
+    assert np.allclose(S, St)
+    assert np.allclose(F, Ft)
+
     log_prob = np.log(np.sum(F[:, -1])) - np.sum(np.log(S))
     print("log prob = ", log_prob)
-    print("prob = ", np.exp(log_prob))
+    print("prob = ", np.exp(-log_prob))
 
     F *= np.cumprod(S)
     print("P = ", model.evaluate(h), np.sum(F[:, -1])) #/ np.prod(S))
@@ -683,13 +871,13 @@ def develop():
 
     for j in range(len(h)):
         Fp[:, j] = [alpha[j][k] for k in range(ts.num_samples)]
-        print("site ", j)
-        print(np.array([alpha[j][k] for k in range(ts.num_samples)]))
-        print(F[:, j])
-        print()
+        # print("site ", j)
+        # print(np.array([alpha[j][k] for k in range(ts.num_samples)]))
+        # print(F[:, j])
+        # print()
 
-    # assert np.allclose(F, Fp)
     print("P = ", model.evaluate(h), np.sum(F[:, -1]))
+    assert np.allclose(F, Fp)
 
     # print(alpha[m - 1])
 
@@ -729,6 +917,7 @@ def main():
 
     # verify()
     develop()
+    # plot_encoding_efficiency()
 
 
 if __name__ == "__main__":
