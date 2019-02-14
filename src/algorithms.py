@@ -382,27 +382,40 @@ def sankoff(tree, genotypes):
     return f
 
 
-
 def compress(tree, f):
-
-#     print("BEFORE")
-#     node_labels = {u: "        " for u in tree.samples()}
-#     for u in f:
-#         node_labels[u] = "{}:{:.8G}".format(u, f[u])
-#     print(tree.draw(format="unicode", node_labels=node_labels))
-#     # print(tree.draw(format="unicode"))
-
     # Quantise f
     f = {u: round(f[u], 10) for u in f}
+    label = {v: j for j, v in enumerate(set(f.values()))}
+
+    N = {u: tree.num_samples(u) for u in f}
+    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+        v = tree.parent(u)
+        while v != tskit.NULL and v not in f:
+            v = tree.parent(v)
+        if v != tskit.NULL:
+            N[v] -= N[u]
+
+
+    # print("BEFORE")
+    # node_labels = {u: "        " for u in tree.samples()}
+    node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
+    # for u in f:
+    #     node_labels[u] = "{}".format(label[f[u]])
+    before = tree.draw(format="unicode", node_labels=node_labels)
+    # print(tree.draw(format="unicode"))
+
     V = []
     for u in tree.tree_sequence.samples():
         v = u
         while v not in f:
             v = tree.parent(v)
         V.append(f[v])
+
     # print(V)
     f = sankoff(tree, V)
     # print("f = ", f)
+
+    # other_compress(tree, f)
 
     # # Cheap compress up to parent approach.
     # fp = {}
@@ -414,11 +427,20 @@ def compress(tree, f):
     #         fp[u] = f[u]
     # f = fp
 
-#     print("AFTER")
-#     node_labels = {u: "        " for u in tree.samples()}
-#     for u in f:
-#         node_labels[u] = "{:.8G}".format(f[u])
-#     print(tree.draw(format="unicode", node_labels=node_labels))
+    N = {u: tree.num_samples(u) for u in f}
+    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+        v = tree.parent(u)
+        while v != tskit.NULL and v not in f:
+            v = tree.parent(v)
+        if v != tskit.NULL:
+            N[v] -= N[u]
+
+    # print("AFTER")
+    # # node_labels = {u: "        " for u in tree.samples()}
+    # node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
+    # after = tree.draw(format="unicode", node_labels=node_labels)
+    # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+    #     print(l1, "|", l2)
 
     return f
 
@@ -818,7 +840,7 @@ def plot_encoding_efficiency():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(8, recombination_rate=2, mutation_rate=2,
+    ts = msprime.simulate(12, recombination_rate=2, mutation_rate=2,
             random_seed=13, length=20.2)
     print("num_trees = ", ts.num_trees)
 
