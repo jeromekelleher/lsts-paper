@@ -7,6 +7,8 @@ import math
 import colorsys
 import statistics
 import heapq
+import collections
+import string
 
 import matplotlib.pyplot as plt
 
@@ -339,53 +341,65 @@ def ls_forward_matrix(h, H, rho, mu):
     return F, S
 
 
-def sankoff(tree, genotypes):
+def sankoff(tree, f):
     """
     Version of the Sankoff algorithm in which we place floating point values
     as the observed states.
 
     Based on treatment from Clemente et al., https://doi.org/10.1186/1471-2105-10-51
     """
-    alleles = list(set(genotypes))
+    alleles = list(set(f.values()))
     num_alleles = len(alleles)
     S = np.zeros((num_alleles, tree.num_nodes))
     infinity = 1e7  # Arbitrary big value
-    # Initialise the weights
-    for allele, u in zip(genotypes, tree.tree_sequence.samples()):
+    for u in tree.tree_sequence.samples():
+        v = u
+        while v not in f:
+            v = tree.parent(v)
         S[:, u] = infinity
-        S[alleles.index(allele), u] = 0
+        S[alleles.index(f[v]), u] = 0
+
+    # Initialise the weights
     for p in tree.nodes(order="postorder"):
         for i in range(num_alleles):
             for child in tree.children(p):
-                min_w = infinity
-                for j in range(num_alleles):
-                    min_w = min(min_w, int(i != j) + S[j, child])
-                S[i, p] += min_w
+                S[i, p] += min(int(i != j) + S[j, child] for j in range(num_alleles))
 
-    f = {}
-    S_anc = {}
+    S_anc = {tree.root: np.argmin(S[:, tree.root])}
+    f = {tree.root: alleles[S_anc[tree.root]]}
     for x in tree.nodes(order="preorder"):
-        S_anc[x] = np.argmin(S[:, x])
         i = S_anc[x]
-        min_cost = infinity
-        for j in range(num_alleles):
-            if x == tree.root:
-                trans_cost = S[j, x]
-            else:
-                trans_cost = int(i != j) + S[j, x]
-            if trans_cost < min_cost:
-                min_cost = trans_cost
-                S_anc[x] = j
-        if x == tree.root or S_anc[x] != S_anc[tree.parent(x)]:
-            f[x] = alleles[S_anc[x]]
-
+        for y in tree.children(x):
+            min_cost = infinity
+            for j in range(num_alleles):
+                trans_cost = int(i != j) + S[j, y]
+                if trans_cost < min_cost:
+                    min_cost = trans_cost
+                    S_anc[y] = j
+            if S_anc[x] != S_anc[y]:
+                f[y] = alleles[S_anc[y]]
     return f
 
+def draw_tree(tree, f):
+    N = {u: tree.num_samples(u) for u in f}
+    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+        v = tree.parent(u)
+        while v != tskit.NULL and v not in f:
+            v = tree.parent(v)
+        if v != tskit.NULL:
+            N[v] -= N[u]
 
-def compress(tree, f):
-    # Quantise f
-    f = {u: round(f[u], 10) for u in f}
-    label = {v: j for j, v in enumerate(set(f.values()))}
+    frequency = collections.Counter()
+    for node, value in f.items():
+        frequency[value] += N[node]
+    label = {
+        v[0]: string.ascii_letters[j].upper()
+        for j, v in enumerate(frequency.most_common())}
+    node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
+    return tree.draw(format="unicode", node_labels=node_labels)
+
+
+def compress2(tree, f):
 
     N = {u: tree.num_samples(u) for u in f}
     for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
@@ -395,29 +409,41 @@ def compress(tree, f):
         if v != tskit.NULL:
             N[v] -= N[u]
 
+    frequency = collections.Counter()
+    for node, value in f.items():
+        frequency[value] += N[node]
+    print()
+    print(frequency.most_common())
+    before = draw_tree(tree, f)
 
+    after = draw_tree(tree, f)
+    for l1, l2 in zip(before.splitlines(), after.splitlines()):
+        print(l1, "|", l2)
+
+
+def compress(tree, f):
+    # Quantise f
+    f = {u: round(f[u], 10) for u in f}
+
+    # label = {v: j for j, v in enumerate(set(f.values()))}
     # print("BEFORE")
     # node_labels = {u: "        " for u in tree.samples()}
-    node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
+    # node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
     # for u in f:
     #     node_labels[u] = "{}".format(label[f[u]])
-    before = tree.draw(format="unicode", node_labels=node_labels)
+    # before = tree.draw(format="unicode", node_labels=node_labels)
     # print(tree.draw(format="unicode"))
 
-    V = []
-    for u in tree.tree_sequence.samples():
-        v = u
-        while v not in f:
-            v = tree.parent(v)
-        V.append(f[v])
 
-    # print(V)
-    f = sankoff(tree, V)
-    # print("f = ", f)
+    before = draw_tree(tree, f)
+    f = sankoff(tree, f)
+    after = draw_tree(tree, f)
+    for l1, l2 in zip(before.splitlines(), after.splitlines()):
+        print(l1, "|", l2)
 
-    # other_compress(tree, f)
+    # compress2(tree, f)
 
-    # # Cheap compress up to parent approach.
+    # Cheap compress up to parent approach.
     # fp = {}
     # for u in f.keys():
     #     v = tree.parent(u)
@@ -427,13 +453,13 @@ def compress(tree, f):
     #         fp[u] = f[u]
     # f = fp
 
-    N = {u: tree.num_samples(u) for u in f}
-    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
-        v = tree.parent(u)
-        while v != tskit.NULL and v not in f:
-            v = tree.parent(v)
-        if v != tskit.NULL:
-            N[v] -= N[u]
+    # N = {u: tree.num_samples(u) for u in f}
+    # for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+    #     v = tree.parent(u)
+    #     while v != tskit.NULL and v not in f:
+    #         v = tree.parent(v)
+    #     if v != tskit.NULL:
+    #         N[v] -= N[u]
 
     # print("AFTER")
     # # node_labels = {u: "        " for u in tree.samples()}
@@ -840,7 +866,7 @@ def plot_encoding_efficiency():
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(12, recombination_rate=2, mutation_rate=2,
+    ts = msprime.simulate(25, recombination_rate=2, mutation_rate=2,
             random_seed=13, length=20.2)
     print("num_trees = ", ts.num_trees)
 
