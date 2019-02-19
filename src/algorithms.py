@@ -341,43 +341,23 @@ def ls_forward_matrix(h, H, rho, mu):
     return F, S
 
 
-def sankoff(tree, f):
+def fitch(tree, f):
     """
-    Version of the Sankoff algorithm in which we place floating point values
-    as the observed states.
-
-    Based on treatment from Clemente et al., https://doi.org/10.1186/1471-2105-10-51
+    Use full parsimony method from tskit.
     """
+    genotypes = np.zeros(tree.tree_sequence.num_samples, dtype=np.uint8)
     alleles = list(set(f.values()))
-    num_alleles = len(alleles)
-    S = np.zeros((num_alleles, tree.num_nodes))
-    infinity = 1e7  # Arbitrary big value
-    for u in tree.tree_sequence.samples():
+    for j, u in enumerate(tree.tree_sequence.samples()):
         v = u
         while v not in f:
             v = tree.parent(v)
-        S[:, u] = infinity
-        S[alleles.index(f[v]), u] = 0
+        genotypes[j] = alleles.index(f[v])
 
-    # Initialise the weights
-    for p in tree.nodes(order="postorder"):
-        for i in range(num_alleles):
-            for child in tree.children(p):
-                S[i, p] += min(int(i != j) + S[j, child] for j in range(num_alleles))
+    ancestral_state, (node, _, state) = tree.reconstruct(genotypes)
+    f = {tree.root: alleles[ancestral_state]}
+    for u, s in zip(node, state):
+        f[u] = alleles[s]
 
-    S_anc = {tree.root: np.argmin(S[:, tree.root])}
-    f = {tree.root: alleles[S_anc[tree.root]]}
-    for x in tree.nodes(order="preorder"):
-        i = S_anc[x]
-        for y in tree.children(x):
-            min_cost = infinity
-            for j in range(num_alleles):
-                trans_cost = int(i != j) + S[j, y]
-                if trans_cost < min_cost:
-                    min_cost = trans_cost
-                    S_anc[y] = j
-            if S_anc[x] != S_anc[y]:
-                f[y] = alleles[S_anc[y]]
     return f
 
 def draw_tree(tree, f):
@@ -435,8 +415,10 @@ def compress(tree, f):
     # print(tree.draw(format="unicode"))
 
 
+    print("HERE")
+
     before = draw_tree(tree, f)
-    f = sankoff(tree, f)
+    f = fitch(tree, f)
     after = draw_tree(tree, f)
     for l1, l2 in zip(before.splitlines(), after.splitlines()):
         print(l1, "|", l2)
@@ -835,7 +817,7 @@ def decode_ts_matrix(ts, F_tree):
 
 def plot_encoding_efficiency():
     for n in [10, 100, 1000, 10000, 10**5]:
-        for L in [1, 10, 100, 1000]:
+        for L in [1, 10, 100]:
             ts = msprime.simulate(
                 n, recombination_rate=0, mutation_rate=2, random_seed=13, length=L)
             # rho = np.zeros(ts.num_sites) + 0.1
