@@ -9,6 +9,7 @@ import statistics
 import heapq
 import collections
 import string
+import random
 
 import matplotlib.pyplot as plt
 
@@ -18,6 +19,64 @@ import numpy as np
 import cairo
 
 import hmm
+
+
+def generate_site_mutations(tree, position, mu, site_table, mutation_table,
+                            multiple_per_node=True):
+    """
+    Generates mutations for the site at the specified position on the specified
+    tree. Mutations happen at rate mu along each branch. The site and mutation
+    information are recorded in the specified tables.  Note that this records
+    more than one mutation per edge.
+    """
+    assert tree.interval[0] <= position < tree.interval[1]
+    states = {"A", "C", "G", "T"}
+    state = random.choice(sorted(list(states)))
+    site_table.add_row(position, state)
+    site = site_table.num_rows - 1
+    for root in tree.roots:
+        stack = [(root, state, tskit.NULL)]
+        while len(stack) != 0:
+            u, state, parent = stack.pop()
+            if u != root:
+                branch_length = tree.branch_length(u)
+                x = random.expovariate(mu)
+                new_state = state
+                while x < branch_length:
+                    new_state = random.choice(sorted(list(states - set(state))))
+                    if multiple_per_node and (state != new_state):
+                        mutation_table.add_row(site, u, new_state, parent)
+                        parent = mutation_table.num_rows - 1
+                        state = new_state
+                    x += random.expovariate(mu)
+                else:
+                    if (not multiple_per_node) and (state != new_state):
+                        mutation_table.add_row(site, u, new_state, parent)
+                        parent = mutation_table.num_rows - 1
+                        state = new_state
+            stack.extend(reversed([(v, state, parent) for v in tree.children(u)]))
+
+
+def jukes_cantor(ts, num_sites, mu, multiple_per_node=True, seed=None):
+    """
+    Returns a copy of the specified tree sequence with Jukes-Cantor mutations
+    applied at the specfied rate at the specifed number of sites. Site positions
+    are chosen uniformly.
+    """
+    random.seed(seed)
+    positions = [ts.sequence_length * random.random() for _ in range(num_sites)]
+    positions.sort()
+    tables = ts.dump_tables()
+    tables.sites.clear()
+    tables.mutations.clear()
+    t = ts.first()
+    for position in positions:
+        while position >= t.interval[1]:
+            t.next()
+        generate_site_mutations(
+            t, position, mu, tables.sites, tables.mutations,
+            multiple_per_node=multiple_per_node)
+    return tables.tree_sequence()
 
 
 class CairoVisualiser(object):
@@ -317,13 +376,12 @@ def ls_forward_matrix_unscaled(h, H, rho, mu):
     return F
 
 
-def ls_forward_matrix(h, H, rho, mu):
+def ls_forward_matrix(h, alleles, H, rho, mu):
     """
     Simple matrix based method for LS forward algorithm.
     """
     assert rho[0] == 0
     n, m = H.shape
-    A = 2 # Fixing to binary for now.
     F = np.zeros((n, m))
     S = np.zeros(m)
     f = np.zeros(n) + 1 / n
@@ -333,7 +391,7 @@ def ls_forward_matrix(h, H, rho, mu):
             p_t = f[j] * (1 - rho[l]) + rho[l] / n
             p_e = mu[l]
             if H[j, l] == h[l]:
-                p_e = 1 - (A - 1) * mu[l]
+                p_e = 1 - (len(alleles[l]) - 1) * mu[l]
             f[j] = p_t * p_e
         S[l] = np.sum(f)
         f /= S[l]
@@ -415,13 +473,13 @@ def compress(tree, f):
     # print(tree.draw(format="unicode"))
 
 
-    print("HERE")
+    # print("HERE")
 
-    before = draw_tree(tree, f)
+    # before = draw_tree(tree, f)
     f = fitch(tree, f)
-    after = draw_tree(tree, f)
-    for l1, l2 in zip(before.splitlines(), after.splitlines()):
-        print(l1, "|", l2)
+    # after = draw_tree(tree, f)
+    # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+    #     print(l1, "|", l2)
 
     # compress2(tree, f)
 
@@ -452,36 +510,40 @@ def compress(tree, f):
 
     return f
 
+def get_state(tree, site, alleles, u):
+    # this should also work for multiple mutations, since mutations are listed
+    # in order going down the tree.
+    mutations = {mut.node: mut.derived_state for mut in site.mutations}
+    while u != tskit.NULL and u not in mutations:
+        u = tree.parent(u)
+    allele = mutations.get(u, site.ancestral_state)
+    return alleles[site.id].index(allele)
 
-def ls_forward_tree(h, ts, rho, mu):
+
+def ls_forward_tree(h, alleles, ts, rho, mu):
     """
     Forward matrix computation based on a single tree.
     """
-
     n, m = ts.num_samples, ts.num_sites
-    A = 2 # Fixing to binary for now.
     F = [None for _ in range(m)]
     S = np.zeros(m)
     f = {u: 1 / n  for u in ts.samples()}
 
     for tree in ts.trees():
         for site in tree.sites():
-            assert len(site.mutations) == 1
-            mutation = site.mutations[0]
             l = site.id
-            # TODO This probably isn't needed anymore
-            u = mutation.node
-            while u != tskit.NULL and u not in f:
-                u = tree.parent(u)
-            f[mutation.node] = 0 if u == tskit.NULL else f[u]
+            # print("l = ", l, h[l])
+            for mutation in site.mutations:
+                u = mutation.node
+                while u != tskit.NULL and u not in f:
+                    u = tree.parent(u)
+                f[mutation.node] = 0 if u == tskit.NULL else f[u]
             for u in f.keys():
                 p_t = f[u] * (1 - rho[l]) + rho[l] / n
-                # Assuming polarised 0/1 mutation
-                d = is_descendant(tree, u, mutation.node)
-                state = int(d)
+                state = get_state(tree, site, alleles, u)
                 p_e = mu[l]
                 if h[l] == state:
-                    p_e = 1 - (A - 1) * mu[l]
+                    p_e = 1 - (len(alleles[l]) - 1) * mu[l]
                 f[u] = p_t * p_e
 
             f = compress(tree, f)
@@ -819,13 +881,16 @@ def plot_encoding_efficiency():
     for n in [10, 100, 1000, 10000, 10**5]:
         for L in [1, 10, 100]:
             ts = msprime.simulate(
-                n, recombination_rate=0, mutation_rate=2, random_seed=13, length=L)
+                n, recombination_rate=1, mutation_rate=2, random_seed=13, length=L)
+            ts = jukes_cantor(ts, L * 10, 0.05, seed=1, multiple_per_node=False)
+
             # rho = np.zeros(ts.num_sites) + 0.1
             # mu = np.zeros(ts.num_sites) + 0.01
             # H = ts.genotype_matrix().T
             # h = H[0].copy()
             # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
 
+            alleles = [var.alleles for var in ts.variants()]
             h = np.zeros(ts.num_sites, dtype=int)
             h[ts.num_sites // 2:] = 1
             np.random.seed(1)
@@ -833,7 +898,7 @@ def plot_encoding_efficiency():
             mu = np.random.random(ts.num_sites) #* 0.1
 
             rho[0] = 0
-            Ft, St = ls_forward_tree(h, ts, rho, mu)
+            Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
             X = np.array([len(f) for f in Ft])
             Y = np.zeros_like(X)
             for j, f in enumerate(Ft):
@@ -843,15 +908,22 @@ def plot_encoding_efficiency():
             plt.plot(Y, label="distinct")
             plt.savefig("tmp/n={}_L={}.png".format(n, L))
             plt.clf()
-            print(n, L, ts.num_sites, np.mean(X), np.mean(Y), sep="\t")
+            print(n, L, ts.num_sites, ts.num_trees, np.mean(X), np.mean(Y),
+                    np.mean([len(a) for a in alleles]), sep="\t")
 
 def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
-    ts = msprime.simulate(25, recombination_rate=2, mutation_rate=2,
-            random_seed=13, length=20.2)
+    ts = msprime.simulate(
+        250, recombination_rate=1, mutation_rate=2, random_seed=13, length=2)
     print("num_trees = ", ts.num_trees)
+    ts = jukes_cantor(ts, 200, 0.6, seed=1, multiple_per_node=False)
 
+    # for h in ts.haplotypes():
+    #     print(h)
+
+    alleles = [var.alleles for var in ts.variants()]
+    print("mean alleles = ", np.mean([len(a) for a in alleles]))
     H = ts.genotype_matrix().T
     n, m = H.shape
     # print("Shape = ", H.shape)
@@ -882,8 +954,8 @@ def develop():
     model = ls_hmm(H, rho, mu)
 
     # F = ls_forward_matrix_unscaled(h, H, rho, mu)
-    F, S = ls_forward_matrix(h, H, rho, mu)
-    Ft, St = ls_forward_tree(h, ts, rho, mu)
+    F, S = ls_forward_matrix(h, alleles, H, rho, mu)
+    Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
     Ft = decode_ts_matrix(ts, Ft)
 
     assert np.allclose(S, St)
@@ -896,18 +968,19 @@ def develop():
     F *= np.cumprod(S)
     print("P = ", model.evaluate(h), np.sum(F[:, -1])) #/ np.prod(S))
 
-    alpha = model._forward(h)
-    Fp = np.zeros_like(F)
+#     # Only works for binary mutations.
 
-    for j in range(len(h)):
-        Fp[:, j] = [alpha[j][k] for k in range(ts.num_samples)]
-        # print("site ", j)
-        # print(np.array([alpha[j][k] for k in range(ts.num_samples)]))
-        # print(F[:, j])
-        # print()
+#     alpha = model._forward(h)
+#     Fp = np.zeros_like(F)
+#     for j in range(len(h)):
+#         Fp[:, j] = [alpha[j][k] for k in range(ts.num_samples)]
+#         # print("site ", j)
+#         # print(np.array([alpha[j][k] for k in range(ts.num_samples)]))
+#         # print(F[:, j])
+#         # print()
 
-    print("P = ", model.evaluate(h), np.sum(F[:, -1]))
-    assert np.allclose(F, Fp)
+#     print("P = ", model.evaluate(h), np.sum(F[:, -1]))
+#     assert np.allclose(F, Fp)
 
     # print(alpha[m - 1])
 
