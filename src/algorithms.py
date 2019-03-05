@@ -437,76 +437,15 @@ def draw_tree(tree, f):
     return tree.draw(format="unicode", node_labels=node_labels)
 
 
-def compress2(tree, f):
-
-    N = {u: tree.num_samples(u) for u in f}
-    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
-        v = tree.parent(u)
-        while v != tskit.NULL and v not in f:
-            v = tree.parent(v)
-        if v != tskit.NULL:
-            N[v] -= N[u]
-
-    frequency = collections.Counter()
-    for node, value in f.items():
-        frequency[value] += N[node]
-    print()
-    print(frequency.most_common())
-    before = draw_tree(tree, f)
-
-    after = draw_tree(tree, f)
-    for l1, l2 in zip(before.splitlines(), after.splitlines()):
-        print(l1, "|", l2)
-
-
 def compress(tree, f):
     # Quantise f
     f = {u: round(f[u], 10) for u in f}
 
-    # label = {v: j for j, v in enumerate(set(f.values()))}
-    # print("BEFORE")
-    # node_labels = {u: "        " for u in tree.samples()}
-    # node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
-    # for u in f:
-    #     node_labels[u] = "{}".format(label[f[u]])
-    # before = tree.draw(format="unicode", node_labels=node_labels)
-    # print(tree.draw(format="unicode"))
-
-
-    # print("HERE")
-
-    # before = draw_tree(tree, f)
+    before = draw_tree(tree, f)
     f = fitch(tree, f)
-    # after = draw_tree(tree, f)
-    # for l1, l2 in zip(before.splitlines(), after.splitlines()):
-    #     print(l1, "|", l2)
-
-    # compress2(tree, f)
-
-    # Cheap compress up to parent approach.
-    # fp = {}
-    # for u in f.keys():
-    #     v = tree.parent(u)
-    #     while v != tskit.NULL and v not in f:
-    #         v = tree.parent(v)
-    #     if v == tskit.NULL or not math.isclose(f[v], f[u], rel_tol=1e-6):
-    #         fp[u] = f[u]
-    # f = fp
-
-    # N = {u: tree.num_samples(u) for u in f}
-    # for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
-    #     v = tree.parent(u)
-    #     while v != tskit.NULL and v not in f:
-    #         v = tree.parent(v)
-    #     if v != tskit.NULL:
-    #         N[v] -= N[u]
-
-    # print("AFTER")
-    # # node_labels = {u: "        " for u in tree.samples()}
-    # node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
-    # after = tree.draw(format="unicode", node_labels=node_labels)
-    # for l1, l2 in zip(before.splitlines(), after.splitlines()):
-    #     print(l1, "|", l2)
+    after = draw_tree(tree, f)
+    for l1, l2 in zip(before.splitlines(), after.splitlines()):
+        print(l1, "|", l2)
 
     return f
 
@@ -915,9 +854,9 @@ def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
     ts = msprime.simulate(
-        250, recombination_rate=1, mutation_rate=2, random_seed=13, length=2)
+        6, recombination_rate=1, mutation_rate=2, random_seed=13, length=2)
     print("num_trees = ", ts.num_trees)
-    ts = jukes_cantor(ts, 200, 0.6, seed=1, multiple_per_node=False)
+    # ts = jukes_cantor(ts, 200, 0.6, seed=1, multiple_per_node=False)
 
     # for h in ts.haplotypes():
     #     print(h)
