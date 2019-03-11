@@ -36,38 +36,7 @@ def fitch_sets(tree, labels):
                 A[u] = set.union(*[A[v] for v in tree.children(u)])
     return A
 
-
-def count_parismony(tree, labels):
-    ts = tree.tree_sequence
-    count = np.zeros((ts.num_nodes, np.max(labels) + 1), dtype=int)
-    for j, sample in enumerate(ts.samples()):
-        count[sample, labels[j]] = 1
-
-    for u in tree.nodes(order="postorder"):
-        zeros = np.ones(count.shape[1], dtype=int)
-        for v in tree.children(u):
-            count[u] += count[v]
-            zeros = np.logical_and(zeros, count[v] > 0)
-        if np.sum(zeros) > 0:
-            count[u] *= zeros
-
-    ancestral_state = np.where(count[tree.root] > 0)[0][0]
-    nodes = []
-    states = []
-    stack = [(tree.root, ancestral_state)]
-    while len(stack) > 0:
-        u, state = stack.pop()
-        for v in tree.children(u):
-            child_state = state
-            if count[v, state] == 0:
-                child_state = np.where(count[v] > 0)[0][0]
-                nodes.append(v)
-                states.append(child_state)
-            stack.append((v, child_state))
-    return ancestral_state, np.array(nodes), np.array(states), count
-
-
-def incremental_fitch_counts(ts, labels):
+def incremental_fitch_sets(ts, labels):
     """
     Returns an iterator over the Fitch sets for the specified tree sequence.
     """
@@ -149,15 +118,106 @@ def incremental_fitch_counts(ts, labels):
             propagate_fitch(edge.parent)
         yield A
 
+
+
+def count_parismony(tree, labels):
+    ts = tree.tree_sequence
+    count = np.zeros((ts.num_nodes, np.max(labels) + 1), dtype=int)
+    for j, sample in enumerate(ts.samples()):
+        count[sample, labels[j]] = 1
+
+    for u in tree.nodes(order="postorder"):
+        zeros = np.ones(count.shape[1], dtype=int)
+        for v in tree.children(u):
+            count[u] += count[v]
+            zeros = np.logical_and(zeros, count[v] > 0)
+        if np.sum(zeros) > 0:
+            count[u] *= zeros
+
+    ancestral_state = np.where(count[tree.root] > 0)[0][0]
+    nodes = []
+    states = []
+    stack = [(tree.root, ancestral_state)]
+    while len(stack) > 0:
+        u, state = stack.pop()
+        for v in tree.children(u):
+            child_state = state
+            if count[v, state] == 0:
+                child_state = np.where(count[v] > 0)[0][0]
+                nodes.append(v)
+                states.append(child_state)
+            stack.append((v, child_state))
+    return ancestral_state, np.array(nodes), np.array(states), count
+
+
+def np_fitch_counts(tree, labels):
+    """
+    Return the Fitch sets in which we count the number of immediate children
+    that are in the Fitch set.
+    """
+    ts = tree.tree_sequence
+    K = np.max(labels) + 1
+    A = np.zeros((ts.num_nodes, K), dtype=int)
+    for label, sample in zip(labels, tree.tree_sequence.samples()):
+        A[sample, label] = 1
+    for u in tree.nodes(order="postorder"):
+        if tree.is_internal(u):
+            U = np.zeros(K, dtype=int)
+            I = np.zeros(K, dtype=int)
+            mask = np.ones(K, dtype=int)
+            for v in tree.children(u):
+                U += A[v] > 0
+                mask = np.logical_and(mask, A[v] > 0)
+                I[np.logical_not(mask)] = 0
+                I[mask] += A[v][mask] > 0
+            A[u] = I
+            if np.sum(mask) == 0:
+                A[u] = U
+    return A
+
+
+def incremental_fitch_counts(ts, labels):
+    parent = np.zeros(ts.num_nodes, dtype=int) - 1
+    K = np.max(labels) + 1
+    A = np.zeros((ts.num_nodes, K), dtype=int)
+    I = np.zeros((ts.num_nodes, K), dtype=int)
+    U = np.zeros((ts.num_nodes, K), dtype=int)
+    M = np.ones((ts.num_nodes, K), dtype=int)
+
+    for label, sample in zip(labels, ts.samples()):
+        A[sample, label] = 1
+
+    for (left, right), edges_out, edges_in in ts.edge_diffs():
+        for edge in edges_out:
+            parent[edge.child] = -1
+
+        for edge in edges_in:
+            parent[edge.child] = edge.parent
+            u = edge.parent
+            v = edge.child
+            while u != -1:
+                U[u] += A[v] > 0
+                M[u] = np.logical_and(M[u], A[v] > 0)
+                I[u][np.logical_not(M[u])] = 0
+                I[u][M[u]] += A[v][M[u]] > 0
+                A[u] = I[u]
+                if np.sum(M[u]) == 0:
+                    A[u] = U[u]
+                v = u
+                u = parent[u]
+        for j in range(ts.num_nodes):
+            print(j, M[j], I[j], U[j])
+        yield A
+
 def incremental_fitch_dev():
-    ts = msprime.simulate(25, recombination_rate=15, random_seed=2)
+    ts = msprime.simulate(7, recombination_rate=15, random_seed=2)
 
     labels = np.zeros(ts.num_samples, dtype=np.uint8)
     labels[ts.sample_size // 3:] = 1
     labels[2 * ts.sample_size // 3:] = 2
     print(labels)
 
-    for tree, A2 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
+    for tree, A3 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
 
         # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
         # t2 = tree.draw(format="unicode", node_labels=node_labels)
@@ -176,10 +236,19 @@ def incremental_fitch_dev():
         # # print(count)
 
         A1 = fitch_sets(tree, labels)
-        node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
+        A2 = np_fitch_counts(tree, labels)
+        node_labels = {u: "{}:{}:{}".format(u, A1[u], A2[u]) for u in tree.nodes()}
         t1 = tree.draw(format="unicode", node_labels=node_labels)
         print(t1)
-        assert A1 == A2
+        # print(A2)
+        # print(A3)
+        print(np.all(A2 == A3))
+        for j in range(ts.num_nodes):
+            # print(fs, counts)
+            if not np.all(A2[j] == A3[j]):
+                print(j, A2[j], A3[j])
+            assert set(np.where(A2[j] > 0)[0]) == A1[j]
+        # assert A1 == A2
         # print("ancestral_state1 = ", ancestral_state, node, state)
         # print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
         # assert len(nodes2) == len(node)
