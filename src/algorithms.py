@@ -72,46 +72,85 @@ def incremental_fitch_counts(ts, labels):
     Returns an iterator over the Fitch sets for the specified tree sequence.
     """
     K = np.max(labels) + 1
-    A = np.zeros((ts.num_nodes, K), dtype=int)
-    M = np.ones((ts.num_nodes, K), dtype=int)
-    C = np.zeros((ts.num_nodes, K), dtype=int)
-    for label, sample in zip(labels, ts.samples()):
-        C[sample][label] = 1
-        A[sample][label] = 1
+    # Quintuply linked tree.
     parent = np.zeros(ts.num_nodes, dtype=int) - 1
+    left_sib = np.zeros(ts.num_nodes, dtype=int) - 1
+    right_sib = np.zeros(ts.num_nodes, dtype=int) - 1
+    left_child = np.zeros(ts.num_nodes, dtype=int) - 1
+    right_child = np.zeros(ts.num_nodes, dtype=int) - 1
+    # Fitch sets.
+    A = [set() for _ in range(ts.num_nodes)]
+    for label, sample in zip(labels, ts.samples()):
+        A[sample] = {label}
+
+    def remove_edge(edge):
+        p = edge.parent
+        c = edge.child
+        lsib = left_sib[c]
+        rsib = right_sib[c]
+        if lsib == -1:
+            left_child[p] = rsib
+        else:
+            right_sib[lsib] = rsib
+        if rsib == -1:
+            right_child[p] = lsib
+        else:
+            left_sib[rsib] = lsib
+        parent[c] = -1
+        left_sib[c] = -1
+        right_sib[c] = -1
+
+    def insert_edge(edge):
+        p = edge.parent
+        c = edge.child
+        assert parent[c] == -1, "contradictory edges"
+        parent[c] = p
+        u = right_child[p]
+        if u == -1:
+            left_child[p] = c
+            left_sib[c] = -1
+            right_sib[c] = -1
+        else:
+            right_sib[u] = c
+            left_sib[c] = u
+            right_sib[c] = -1
+        right_child[p] = c
+
+    def propagate_fitch(u):
+        """
+        Starting from node u, propagate Fitch sets changes up the tree.
+        """
+        while u != -1:
+            children = []
+            v = left_child[u]
+            while v != -1:
+                children.append(v)
+                v = right_sib[v]
+            if len(children) == 0:
+                A[u] = set()
+            else:
+                a = set.intersection(*[A[v] for v in children])
+                if len(a) == 0:
+                    a = set.union(*[A[v] for v in children])
+                # If there's no change at this node then we can't have any changes
+                # further up the tree.
+                if A[u] == a:
+                    break
+                A[u] = a
+            u = parent[u]
 
     for (left, right), edges_out, edges_in in ts.edge_diffs():
         for edge in edges_out:
-            print("REMOVE", edge)
-            parent[edge.child] = -1
-            v = edge.child
-            u = edge.parent
-            C[u] -= A[v]
-            while v != -1:
-                M[u] = np.logical_and(M[u], A[v] > 0)
-                A[u] = C[u]
-                if np.sum(M[u]) != 0:
-                    A[u] *= M[u]
-                v = u
-                u = parent[u]
+            remove_edge(edge)
+            propagate_fitch(edge.parent)
 
         for edge in edges_in:
-            print("INSERT", edge)
-            parent[edge.child] = edge.parent
-            v = edge.child
-            u = edge.parent
-            C[u] += A[v]
-            while v != -1:
-                M[u] = np.logical_and(M[u], A[v] > 0)
-                A[u] = C[u]
-                if np.sum(M[u]) != 0:
-                    A[u] *= M[u]
-                v = u
-                u = parent[u]
+            insert_edge(edge)
+            propagate_fitch(edge.parent)
         yield A
 
 def incremental_fitch_dev():
-    ts = msprime.simulate(15, recombination_rate=5, random_seed=2)
+    ts = msprime.simulate(25, recombination_rate=15, random_seed=2)
 
     labels = np.zeros(ts.num_samples, dtype=np.uint8)
     labels[ts.sample_size // 3:] = 1
@@ -119,30 +158,30 @@ def incremental_fitch_dev():
     print(labels)
 
     for tree, A2 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
-        # print(A1 == A2)
 
         # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
         # t2 = tree.draw(format="unicode", node_labels=node_labels)
         # for l1, l2 in zip(t1.splitlines(), t2.splitlines()):
         #     print(l1, "|", l2)
 
-        ancestral_state1, (nodes1, _, states1) = tree.reconstruct(labels)
-        ancestral_state2, nodes2, states2, count = count_parismony(tree, labels)
-        assert ancestral_state1 == ancestral_state2
-        assert np.all(nodes1 == nodes2)
-        assert np.all(states1 == states2)
-        for u in tree.nodes():
-            end = "" if np.all(A2[u] == count[u]) else "*"
-            print(u, A2[u], count[u], end, sep="\t")
-        # print(A2)
-        # print(count)
+        # ancestral_state1, (nodes1, _, states1) = tree.reconstruct(labels)
+        # ancestral_state2, nodes2, states2, count = count_parismony(tree, labels)
+        # assert ancestral_state1 == ancestral_state2
+        # assert np.all(nodes1 == nodes2)
+        # assert np.all(states1 == states2)
+        # for u in tree.nodes():
+        #     end = "" if np.all(A2[u] == count[u]) else "*"
+        #     print(u, A2[u], count[u], end, sep="\t")
+        # # print(A2)
+        # # print(count)
 
         A1 = fitch_sets(tree, labels)
-        node_labels = {u: "{}:{}".format(u, count[u]) for u in tree.nodes()}
+        node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
         t1 = tree.draw(format="unicode", node_labels=node_labels)
         print(t1)
+        assert A1 == A2
         # print("ancestral_state1 = ", ancestral_state, node, state)
-        print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
+        # print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
         # assert len(nodes2) == len(node)
 
 #         N = {u: tree.num_samples(u) for u in f}
