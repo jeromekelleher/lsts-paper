@@ -180,43 +180,67 @@ def incremental_fitch_counts(ts, labels):
     for label, sample in zip(labels, ts.samples()):
         A[sample, label] = 1
 
+    trees = ts.trees()
     for (left, right), edges_out, edges_in in ts.edge_diffs():
         for edge in edges_out:
             parent[edge.child] = -1
             N[edge.parent] -= 1
+            v = edge.parent
+            u = parent[v]
+            while u != -1:
+                U[u] -= A[v]
+                v = u
+                u = parent[u]
             u = edge.parent
             v = edge.child
-            # We're doing this wrong. We need to first subtract the value
-            # from the current node and then propagate up *while* we're
-            # changing the union. Counting the leaves is the right approach
-            # alright though, as this tells us how many are in the intersection.
-            while u != -1:
-                U[u] -= A[v] > 0
-                # assert np.all(U >= 0)
-                A[u] = U[u]
-                if np.any(A[u] == N[u]):
-                    A[u, A[u] < N[u]] = 0
+            U[u] -= A[v]
+            A[u] = U[u] == N[u]
+            if np.sum(A[u]) == 0:
+                A[u] = U[u] > 0
+            if N[u] == 0:
+                A[u] = 0
 
+            v = edge.parent
+            u = parent[v]
+            while u != -1:
+                U[u] += A[v]
+                A[u] = U[u] == N[u]
+                if np.sum(A[u]) == 0:
+                    A[u] = U[u] > 0
                 v = u
                 u = parent[u]
 
         for edge in edges_in:
             parent[edge.child] = edge.parent
             N[edge.parent] += 1
+            v = edge.parent
+            u = parent[v]
+            while u != -1:
+                U[u] -= A[v]
+                v = u
+                u = parent[u]
             u = edge.parent
             v = edge.child
             while u != -1:
-                U[u] += A[v] > 0
-                A[u] = U[u]
-                if np.any(A[u] == N[u]):
-                    A[u, A[u] < N[u]] = 0
+                U[u] += A[v]
+                A[u] = U[u] == N[u]
+                if np.sum(A[u]) == 0:
+                    A[u] = U[u] > 0
                 v = u
                 u = parent[u]
+        tree = next(trees)
+
+        A2 = (np_fitch_counts(tree, labels) > 0).astype(int)
+        # node_labels = {u: "{}:{}:{}".format(u, A[u], A2[u]) for u in tree.nodes()}
+        # print(tree.draw(format="unicode", node_labels=node_labels))
+        for j in range(ts.num_nodes):
+            if not np.all(A2[j] == A[j]):
+                print("ERR", j, A2[j], A[j])
         yield A
 
 
 def incremental_fitch_dev():
-    ts = msprime.simulate(7, recombination_rate=15, random_seed=2)
+    ts = msprime.simulate(70, recombination_rate=15, random_seed=2)
 
     labels = np.zeros(ts.num_samples, dtype=np.uint8)
     labels[ts.sample_size // 3:] = 1
@@ -228,14 +252,14 @@ def incremental_fitch_dev():
         A1 = fitch_sets(tree, labels)
         A2 = np_fitch_counts(tree, labels)
         node_labels = {u: "{}:{}:{}".format(u, A1[u], A2[u]) for u in tree.nodes()}
-        t1 = tree.draw(format="unicode", node_labels=node_labels)
-        print(t1)
+        # t1 = tree.draw(format="unicode", node_labels=node_labels)
+        # print(t1)
         # print(A2)
         # print(A3)
-        print(np.all(A2 == A3))
+        # print(np.all(A2 == A3))
         for j in range(ts.num_nodes):
-            if not np.all(A2[j] == A3[j]):
-                print(j, A2[j], A3[j])
+            # if not np.all(A2[j] == A3[j]):
+            #     print(j, A2[j], A3[j])
             assert set(np.where(A2[j] > 0)[0]) == A1[j]
         # assert A1 == A2
         # print("ancestral_state1 = ", ancestral_state, node, state)
