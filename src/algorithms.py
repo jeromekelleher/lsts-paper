@@ -224,35 +224,87 @@ def incremental_fitch_counts(ts, labels):
         yield A
 
 
+def dynamic_fitch_single_tree(tree, seed):
+    rng = random.Random(seed)
+    labels = [rng.randint(0, 3) for _ in range(tree.tree_sequence.num_samples)]
+    # compute the inital Fitch sets.
+    A = [set() for _ in range(tree.num_nodes)]
+    U = [collections.Counter() for _ in range(tree.num_nodes)]
+    for label, sample in zip(labels, tree.tree_sequence.samples()):
+        A[sample].add(label)
+    for u in tree.nodes(order="postorder"):
+        if tree.is_internal(u):
+            for v in tree.children(u):
+                U[u].update(A[v])
+            k = len(tree.children(u))
+            A[u] = set(U[u].keys())
+            if any(count == k for count in U[u].values()):
+                A[u] = set(key for key, value in U[u].items() if value == k)
+    assert A == fitch_sets(tree, labels)
+    node_labels = {u: "{}:{}:{}".format(u, A[u], U[u]) for u in tree.nodes()}
+    print(tree.draw(format="unicode", node_labels=node_labels))
+    # Traverse downwards to compute the mutations
+    state = list(A[tree.root])[0]
+    f = {tree.root: state}
+    stack = [(tree.root, state)]
+    while len(stack) > 0:
+        u, state = stack.pop()
+        for v in tree.children(u):
+            child_state = state
+            if state not in A[v]:
+                child_state = list(A[v])[0]
+                f[v] = child_state
+            stack.append((v, child_state))
+
+    print("f = ", f)
+    for _ in range(10):
+        # Randomly add in another state
+        nodes = sorted(set(tree.nodes()) - set(f.keys()))
+        u = rng.choice(nodes)
+        value = rng.randint(0, 10)
+        print("INSERT", u, "->", value)
+
+
+
+
+
+
+
+
+
+
 def incremental_fitch_dev():
-    ts = msprime.simulate(170, recombination_rate=15, random_seed=2)
+    ts = msprime.simulate(6, recombination_rate=0, random_seed=2)
+    dynamic_fitch_single_tree(ts.first(), 2)
 
-    for _ in range(100):
+    # for _ in range(100):
+    # for _ in range(1):
 
-        labels = np.random.randint(0, 5, size=ts.num_samples)
-        # labels = np.zeros(ts.num_samples, dtype=np.uint8)
-        # labels[ts.sample_size // 3:] = 1
-        # labels[2 * ts.sample_size // 3:] = 2
-        print(labels)
+    #     # labels = np.random.randint(0, 5, size=ts.num_samples)
+    #     labels = np.zeros(ts.num_samples, dtype=np.uint8)
+    #     labels[ts.sample_size // 3:] = 1
+    #     labels[2 * ts.sample_size // 3:] = 2
+    #     print(labels)
 
-        for tree, A3 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
+    #     for tree, A3 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
 
-            A1 = fitch_sets(tree, labels)
-            A2 = np_fitch_counts(tree, labels)
-            # node_labels = {u: "{}:{}:{}".format(u, A1[u], A2[u]) for u in tree.nodes()}
-            # t1 = tree.draw(format="unicode", node_labels=node_labels)
-            # print(t1)
-            # print(A2)
-            # print(A3)
-            # print(np.all(A2 == A3))
-            for j in range(ts.num_nodes):
-                # if not np.all(A2[j] == A3[j]):
-                #     print(j, A2[j], A3[j])
-                assert set(np.where(A2[j] > 0)[0]) == A1[j]
-            # assert A1 == A2
-            # print("ancestral_state1 = ", ancestral_state, node, state)
-            # print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
-            # assert len(nodes2) == len(node)
+    #         A1 = fitch_sets(tree, labels)
+    #         A2 = np_fitch_counts(tree, labels)
+    #         # node_labels = {u: "{}:{}:{}".format(u, A1[u], A2[u]) for u in tree.nodes()}
+    #         # t1 = tree.draw(format="unicode", node_labels=node_labels)
+    #         # print(t1)
+    #         # print(A2)
+    #         # print(A3)
+    #         # print(np.all(A2 == A3))
+    #         for j in range(ts.num_nodes):
+    #             # if not np.all(A2[j] == A3[j]):
+    #             #     print(j, A2[j], A3[j])
+    #             assert set(np.where(A2[j] > 0)[0]) == A1[j]
+    #         # assert A1 == A2
+    #         # print("ancestral_state1 = ", ancestral_state, node, state)
+    #         # print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
+    #         # assert len(nodes2) == len(node)
+
 
 def generate_site_mutations(tree, position, mu, site_table, mutation_table,
                             multiple_per_node=True):
