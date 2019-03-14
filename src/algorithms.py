@@ -36,6 +36,41 @@ def fitch_sets(tree, labels):
                 A[u] = set.union(*[A[v] for v in tree.children(u)])
     return A
 
+def fitch_sets_from_mutations(tree, mutations):
+    """
+    Given a tree and a set of mutations on the tree, return the corresponding
+    Fitch sets for all nodes that are ancestral to mutations.
+    """
+    A = [set() for _ in range(tree.num_nodes)]
+
+    for u in sorted(mutations.keys(), key=lambda u: tree.time(u)):
+        # State of mutation is always in node set.
+        mutation_state = mutations[u]
+        A[u].add(mutation_state)
+        # Find parent state
+        v = tree.parent(u)
+        while v != -1 and v not in mutations:
+            v = tree.parent(v)
+        if v != -1:
+            parent_state = mutations[v]
+            u = tree.parent(u)
+            while u != -1:
+                child_sets = []
+                for v in tree.children(u):
+                    # If the set for a given child is empty, then we know it inherits
+                    # directly from the parent state and must be a singleton set.
+                    if len(A[v]) == 0:
+                        child_sets.append({parent_state})
+                    else:
+                        child_sets.append(A[v])
+                A[u] = set.intersection(*child_sets)
+                if len(A[u]) == 0:
+                    A[u] = set.union(*child_sets)
+                u = tree.parent(u)
+    return A
+
+
+
 def incremental_fitch_sets(ts, labels):
     """
     Returns an iterator over the Fitch sets for the specified tree sequence.
@@ -224,9 +259,9 @@ def incremental_fitch_counts(ts, labels):
         yield A
 
 
-def dynamic_fitch_single_tree(tree, seed):
+def dynamic_fitch_single_tree(tree, seed, num_labels=3):
     rng = random.Random(seed)
-    labels = [rng.randint(0, 3) for _ in range(tree.tree_sequence.num_samples)]
+    labels = [rng.randint(0, num_labels) for _ in range(tree.tree_sequence.num_samples)]
     # compute the inital Fitch sets.
     A = [set() for _ in range(tree.num_nodes)]
     U = [collections.Counter() for _ in range(tree.num_nodes)]
@@ -241,8 +276,6 @@ def dynamic_fitch_single_tree(tree, seed):
             if any(count == k for count in U[u].values()):
                 A[u] = set(key for key, value in U[u].items() if value == k)
     assert A == fitch_sets(tree, labels)
-    node_labels = {u: "{}:{}:{}".format(u, A[u], U[u]) for u in tree.nodes()}
-    print(tree.draw(format="unicode", node_labels=node_labels))
     # Traverse downwards to compute the mutations
     state = list(A[tree.root])[0]
     f = {tree.root: state}
@@ -256,26 +289,36 @@ def dynamic_fitch_single_tree(tree, seed):
                 f[v] = child_state
             stack.append((v, child_state))
 
-    print("f = ", f)
-    for _ in range(10):
-        # Randomly add in another state
-        nodes = sorted(set(tree.nodes()) - set(f.keys()))
-        u = rng.choice(nodes)
-        value = rng.randint(0, 10)
-        print("INSERT", u, "->", value)
+    # node_labels = {u: "{}:{}:{}".format(u, A[u], U[u]) for u in tree.nodes()}
+    node_labels = {u: "   " for u in tree.samples()}
+    node_labels.update({u: f"{u}:{state}" for u, state in f.items()})
+    # print(f)
+    # print(tree.draw(format="unicode", node_labels=node_labels))
 
 
+    A1 = fitch_sets(tree, labels)
+    # node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
+    # t1 = tree.draw(format="unicode", node_labels=node_labels)
+    # print(t1)
 
+    A2 = fitch_sets_from_mutations(tree, f)
+    # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
+    # t1 = tree.draw(format="unicode", node_labels=node_labels)
+    # print(t1)
 
-
-
-
-
+    # Check that all paths from mutations upwards are correct.
+    for u in f.keys():
+        while u != -1:
+            assert A2[u] == A1[u]
+            u = tree.parent(u)
 
 
 def incremental_fitch_dev():
-    ts = msprime.simulate(6, recombination_rate=0, random_seed=2)
-    dynamic_fitch_single_tree(ts.first(), 2)
+    ts = msprime.simulate(1144, recombination_rate=0, random_seed=2)
+    for num_labels in range(2, 10):
+        print(num_labels)
+        for seed in range(1, 100):
+            dynamic_fitch_single_tree(ts.first(), seed, num_labels)
 
     # for _ in range(100):
     # for _ in range(1):
