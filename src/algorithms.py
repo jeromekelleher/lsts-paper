@@ -340,52 +340,6 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     # print(g3)
     assert np.array_equal(g2, g3)
 
-    # rng = random.Random(seed)
-    # labels = [rng.randint(0, num_labels) for _ in range(tree.tree_sequence.num_samples)]
-    # # compute the inital Fitch sets.
-    # A = [set() for _ in range(tree.num_nodes)]
-    # U = [collections.Counter() for _ in range(tree.num_nodes)]
-    # for label, sample in zip(labels, tree.tree_sequence.samples()):
-    #     A[sample].add(label)
-    # for u in tree.nodes(order="postorder"):
-    #     if tree.is_internal(u):
-    #         for v in tree.children(u):
-    #             U[u].update(A[v])
-    #         k = len(tree.children(u))
-    #         A[u] = set(U[u].keys())
-    #         if any(count == k for count in U[u].values()):
-    #             A[u] = set(key for key, value in U[u].items() if value == k)
-    # assert A == fitch_sets(tree, labels)
-    # # Traverse downwards to compute the mutations
-    # state = list(A[tree.root])[0]
-    # f = {tree.root: state}
-    # stack = [(tree.root, state)]
-    # while len(stack) > 0:
-    #     u, state = stack.pop()
-    #     for v in tree.children(u):
-    #         child_state = state
-    #         if state not in A[v]:
-    #             child_state = list(A[v])[0]
-    #             f[v] = child_state
-    #         stack.append((v, child_state))
-
-
-    # A1 = fitch_sets(tree, labels)
-    # # node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
-    # # t1 = tree.draw(format="unicode", node_labels=node_labels)
-    # # print(t1)
-
-    # A2 = fitch_sets_from_mutations(tree, f)
-    # # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
-    # # t1 = tree.draw(format="unicode", node_labels=node_labels)
-    # # print(t1)
-
-    # # Check that all paths from mutations upwards are correct.
-    # for u in f.keys():
-    #     while u != -1:
-    #         assert A2[u] == A1[u]
-    #         u = tree.parent(u)
-
 
 def incremental_fitch_dev():
     ts = msprime.simulate(11150, recombination_rate=0, random_seed=2)
@@ -396,34 +350,6 @@ def incremental_fitch_dev():
             for seed in range(1, 4):
                 dynamic_fitch_single_tree(
                     ts.first(), num_mutations=num_mutations, num_labels=num_labels, seed=seed)
-
-    # for _ in range(100):
-    # for _ in range(1):
-
-    #     # labels = np.random.randint(0, 5, size=ts.num_samples)
-    #     labels = np.zeros(ts.num_samples, dtype=np.uint8)
-    #     labels[ts.sample_size // 3:] = 1
-    #     labels[2 * ts.sample_size // 3:] = 2
-    #     print(labels)
-
-    #     for tree, A3 in zip(ts.trees(), incremental_fitch_counts(ts, labels)):
-
-    #         A1 = fitch_sets(tree, labels)
-    #         A2 = np_fitch_counts(tree, labels)
-    #         # node_labels = {u: "{}:{}:{}".format(u, A1[u], A2[u]) for u in tree.nodes()}
-    #         # t1 = tree.draw(format="unicode", node_labels=node_labels)
-    #         # print(t1)
-    #         # print(A2)
-    #         # print(A3)
-    #         # print(np.all(A2 == A3))
-    #         for j in range(ts.num_nodes):
-    #             # if not np.all(A2[j] == A3[j]):
-    #             #     print(j, A2[j], A3[j])
-    #             assert set(np.where(A2[j] > 0)[0]) == A1[j]
-    #         # assert A1 == A2
-    #         # print("ancestral_state1 = ", ancestral_state, node, state)
-    #         # print("ancestral_state2 = ", ancestral_state2, nodes2, states2)
-    #         # assert len(nodes2) == len(node)
 
 
 def generate_site_mutations(tree, position, mu, site_table, mutation_table,
@@ -804,6 +730,24 @@ def ls_forward_matrix(h, alleles, H, rho, mu):
     return F, S
 
 
+def draw_tree(tree, f):
+    N = {u: tree.num_samples(u) for u in f}
+    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
+        v = tree.parent(u)
+        while v != tskit.NULL and v not in f:
+            v = tree.parent(v)
+        if v != tskit.NULL:
+            N[v] -= N[u]
+
+    frequency = collections.Counter()
+    for node, value in f.items():
+        frequency[value] += N[node]
+    label = {
+        v[0]: string.ascii_letters[j].upper()
+        for j, v in enumerate(frequency.most_common())}
+    node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
+    return tree.draw(format="unicode", node_labels=node_labels)
+
 def fitch(tree, f):
     """
     Use full parsimony method from tskit.
@@ -823,35 +767,13 @@ def fitch(tree, f):
 
     return f
 
-def draw_tree(tree, f):
-    N = {u: tree.num_samples(u) for u in f}
-    for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
-        v = tree.parent(u)
-        while v != tskit.NULL and v not in f:
-            v = tree.parent(v)
-        if v != tskit.NULL:
-            N[v] -= N[u]
-
-    frequency = collections.Counter()
-    for node, value in f.items():
-        frequency[value] += N[node]
-    label = {
-        v[0]: string.ascii_letters[j].upper()
-        for j, v in enumerate(frequency.most_common())}
-    node_labels = {u: "{}:{}".format(label[f[u]], N[u]) for u in f}
-    return tree.draw(format="unicode", node_labels=node_labels)
-
-
 def compress(tree, f):
-    # Quantise f
-    f = {u: round(f[u], 10) for u in f}
-
-    before = draw_tree(tree, f)
-    f = fitch(tree, f)
-    after = draw_tree(tree, f)
-    for l1, l2 in zip(before.splitlines(), after.splitlines()):
-        print(l1, "|", l2)
-
+    # before = draw_tree(tree, f)
+    f = get_parsimonious_mutations(tree, f)
+    # f = fitch(tree, f)
+    # after = draw_tree(tree, f)
+    # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+    #     print(l1, "|", l2)
     return f
 
 def get_state(tree, site, alleles, u):
@@ -874,6 +796,13 @@ def ls_forward_tree_naive(h, alleles, ts, rho, mu):
     f = {u: 1 / n  for u in ts.samples()}
 
     for tree in ts.trees():
+        # Choose a value arbitrarily and promote its value to root.
+        u, x = f.popitem()
+        while u != tree.root:
+            u = tree.parent(u)
+            assert u not in f
+        f[u] = x
+        f = compress(tree, f)
         for site in tree.sites():
             l = site.id
             # print("l = ", l, h[l])
@@ -888,7 +817,7 @@ def ls_forward_tree_naive(h, alleles, ts, rho, mu):
                 p_e = mu[l]
                 if h[l] == state:
                     p_e = 1 - (len(alleles[l]) - 1) * mu[l]
-                f[u] = p_t * p_e
+                f[u] = round(p_t * p_e, 8)
 
             f = compress(tree, f)
 
@@ -913,9 +842,7 @@ def ls_forward_tree_naive(h, alleles, ts, rho, mu):
             fp[u] = f[v]
         f = fp
     # print(V)
-
     # print(tree.draw(format="unicode", node_labels={u: str(N[u]) for u in f}))
-
     return F, S
 
 def ls_forward_tree(h, alleles, ts, rho, mu):
@@ -927,28 +854,37 @@ def ls_forward_tree(h, alleles, ts, rho, mu):
     S = np.zeros(m)
     f = {}
     parent = np.zeros(ts.num_nodes, dtype=int) - 1
-    A = [set() for _ in range(ts.num_nodes)]
-
     for u in ts.samples():
         f[u] = 1 / n
-        A[u] = {f[u]}
 
     tree = tskit.Tree(ts)
     for (left, right), edges_out, edges_in in ts.edge_diffs():
+
+        # before = draw_tree(tree, f)
+
         for edge in edges_out:
+            u = edge.child
+            while u not in f:
+                u = parent[u]
+            f[edge.child] = f[u]
             parent[edge.child] = -1
-            # v = edge.parent
-            # while v != -1:
-            #     A[v] -= A[edge.child]
-            #     v = parent[v]
+
         for edge in edges_in:
             parent[edge.child] = edge.parent
-            # if not A[edge.child] <= A[edge.parent]:
-            #     A[edge.parent] |= A[edge.child]
+            if edge.parent not in f:
+                f[edge.parent] = f[edge.child]
+            if f[edge.parent] == f[edge.child]:
+                del f[edge.child]
+
         tree.next()
+        # print("NEW TREE")
+        # after = draw_tree(tree, f)
+        # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+        #     print(l1, "|", l2)
+
         for site in tree.sites():
             l = site.id
-            # print("l = ", l, h[l])
+            # print("l = ", l, h[l], site.mutations)
             for mutation in site.mutations:
                 u = mutation.node
                 while u != tskit.NULL and u not in f:
@@ -969,9 +905,9 @@ def ls_forward_tree(h, alleles, ts, rho, mu):
                 p_e = mu[l]
                 if h[l] == state:
                     p_e = 1 - (len(alleles[l]) - 1) * mu[l]
-                f[u] = round(p_t * p_e, 8)
+                f[u] = p_t * p_e
 
-            # f = compress(tree, f)
+            f = compress(tree, f)
 
             N = {u: tree.num_samples(u) for u in f}
             for u in sorted(f.keys(), key=lambda u: -tree.time(u)):
@@ -982,33 +918,10 @@ def ls_forward_tree(h, alleles, ts, rho, mu):
                     N[v] -= N[u]
 
             S[l] = sum(N[u] * f[u] for u in f)
-            f = {u: f[u] / S[l] for u in f}
+            f = {u: f[u] / S[l] if f[u] != 0 else 0 for u in f}
+            # print("f = ", f)
+            # print(draw_tree(tree, f))
             F[l] = f.copy()
-
-        # Scatter f out again for the next tree
-        A = [set() for _ in range(ts.num_nodes)]
-        fp = {}
-        for u in tree.samples():
-            v = u
-            while v not in f:
-                v = tree.parent(v)
-            fp[u] = f[v]
-            A[u] = {f[v]}
-        f = fp
-        for u in tree.nodes(order="postorder"):
-            if tree.is_internal(u):
-                A[u] = set.intersection(*[A[v] for v in tree.children(u)])
-                if len(A[u]) == 0:
-                    A[u] = set.union(*[A[v] for v in tree.children(u)])
-
-        val_map = {
-                v: string.ascii_letters[j].upper()
-                for j, v in enumerate(set(f.values()))}
-        node_labels = {u: str({val_map[x] for x in A[u]}) for u in tree.nodes()}
-        print(tree.draw(format="unicode", node_labels=node_labels, width=400))
-    # print(V)
-
-    # print(tree.draw(format="unicode", node_labels={u: str(N[u]) for u in f}))
 
     return F, S
 
@@ -1247,36 +1160,16 @@ def verify_tree_algorithm(ts):
         np.zeros(ts.num_sites) + 1e-20,
         np.random.random(ts.num_sites)]
 
-    # print(tree.draw(format="unicode"))
+    alleles = [var.alleles for var in ts.variants()]
+
     for h, mu, rho in itertools.product(haplotypes, mus, rhos):
-        matrix_path, m_state = ls_matrix(h, H, rho, mu, return_internal=True)
-        tree_path, t_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
-        V_tree = t_state["V"]
-        V_matrix = m_state["V"]
-        # assert np.all(matrix_path == tree_path)
-        assert np.allclose(V_tree, V_matrix)
-        for tree in ts.trees():
-            for site in tree.sites():
-                T_tree = t_state["T"][site.id]
-                T_matrix = m_state["T"][site.id]
-                S = set()
-                for u in ts.samples():
-                    v = u
-                    while v not in T_tree:
-                        v = tree.parent(v)
-                    if T_tree[v]:
-                        S.add(u)
-                assert S == T_matrix
+        rho[0] = 0
+        F, S = ls_forward_matrix(h, alleles, H, rho, mu)
+        Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
+        Ft = decode_ts_matrix(ts, Ft)
 
-                I_tree = t_state["I"][site.id]
-                I_matrix = m_state["I"][site.id]
-                V_site = V_tree[site.id]
-                Vi = V_site[list(tree.samples(I_tree))]
-                print(I_tree, I_matrix)
-                print(Vi, V_site[I_matrix])
-
-                # print(V_tree[site.id][I_tree],
-                # print(I_matrix)
+        assert np.allclose(S, St)
+        assert np.allclose(F, Ft)
 
 
 
@@ -1290,15 +1183,15 @@ def verify_worker(work):
 
 def verify():
     work = itertools.product([3, 5, 20, 50], [1, 10, 100, 500])
-    for w in work:
-        verify_worker(w)
-        print("Verify ", w)
+    # for w in work:
+    #     verify_worker(w)
+    #     print("Verify ", w)
 
-    # with concurrent.futures.ProcessPoolExecutor() as executor:
-    #     future_to_work = {executor.submit(verify_worker, w): w for w in work}
-    #     for future in concurrent.futures.as_completed(future_to_work):
-    #         n, m = future.result()
-    #         print("Verify n =", n, "num_sites =", m)
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        future_to_work = {executor.submit(verify_worker, w): w for w in work}
+        for future in concurrent.futures.as_completed(future_to_work):
+            n, m = future.result()
+            print("Verify n =", n, "num_sites =", m)
 
 def decode_ts_matrix(ts, F_tree):
     """
@@ -1350,6 +1243,7 @@ def plot_encoding_efficiency():
             print(n, L, ts.num_sites, ts.num_trees, np.mean(X), np.mean(Y),
                     np.mean([len(a) for a in alleles]), sep="\t")
 
+def develop():
 
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
@@ -1376,24 +1270,12 @@ def plot_encoding_efficiency():
     rho = np.zeros(ts.num_sites) + 0.1
     mu = np.zeros(ts.num_sites) + 0.01
 
-    # np.random.seed(1)
-    # rho = np.random.random(ts.num_sites)
-    # mu = np.random.random(ts.num_sites) #* 0.1
-    # matrix_path, matrix_state = ls_matrix(h, H, rho, mu, return_internal=True)
-    # print(H)
-    # path, tree_state = ls_tree_naive(h, ts, rho, mu, return_internal=True)
-#     hmm_path = np.array(model.decode(h))
-#     print("matrix:", matrix_path)
-#     print("hmm   :", hmm_path)
-#     match = H[matrix_path, np.arange(ts.num_sites)]
-#     print("match :", match)
-#     print("h     :", h)
-
     rho[0] = 0
     model = ls_hmm(H, rho, mu)
 
     # F = ls_forward_matrix_unscaled(h, H, rho, mu)
     F, S = ls_forward_matrix(h, alleles, H, rho, mu)
+    # Ft, St = ls_forward_tree_naive(h, alleles, ts, rho, mu)
     Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
     Ft = decode_ts_matrix(ts, Ft)
 
@@ -1457,11 +1339,11 @@ def plot_encoding_efficiency():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    # verify()
+    verify()
     # develop()
     # plot_encoding_efficiency()
 
-    incremental_fitch_dev()
+    # incremental_fitch_dev()
 
 
 if __name__ == "__main__":
