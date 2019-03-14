@@ -70,6 +70,36 @@ def fitch_sets_from_mutations(tree, mutations):
     return A
 
 
+def get_parsimonious_mutations(tree, mutations):
+    """
+    Returns a parsimonious set of mutations by using mutation-oriented Fitch
+    parsimony.
+    """
+    A = fitch_sets_from_mutations(tree, mutations)
+    old_state = mutations[tree.root]
+    new_state = list(A[tree.root])[0]
+    f = {tree.root: new_state}
+    stack = [(tree.root, old_state, new_state)]
+    while len(stack) > 0:
+        u, old_state, new_state = stack.pop()
+        # print("VISIT", u, old_state, new_state)
+        for v in tree.children(u):
+            old_child_state = old_state
+            if v in mutations:
+                old_child_state = mutations[v]
+            if len(A[v]) > 0:
+                new_child_state = new_state
+                if new_state not in A[v]:
+                    new_child_state = list(A[v])[0]
+                    f[v] = new_child_state
+                stack.append((v, old_child_state, new_child_state))
+            else:
+                if old_child_state != new_state:
+                    f[v] = old_child_state
+
+                # print("SKIP", v, old_child_state, new_state)
+    return f
+
 
 def incremental_fitch_sets(ts, labels):
     """
@@ -259,66 +289,113 @@ def incremental_fitch_counts(ts, labels):
         yield A
 
 
-def dynamic_fitch_single_tree(tree, seed, num_labels=3):
+def random_mutations(tree, num_mutations, num_labels, seed):
+    """
+    Returns a random set of mutations on the tree. These may include non-mutations
+    in which we transition to the same state. The root will always have a mutation,
+    and so the returned dictionary will have num_mutations + 1 items.
+    """
     rng = random.Random(seed)
-    labels = [rng.randint(0, num_labels) for _ in range(tree.tree_sequence.num_samples)]
-    # compute the inital Fitch sets.
-    A = [set() for _ in range(tree.num_nodes)]
-    U = [collections.Counter() for _ in range(tree.num_nodes)]
-    for label, sample in zip(labels, tree.tree_sequence.samples()):
-        A[sample].add(label)
-    for u in tree.nodes(order="postorder"):
-        if tree.is_internal(u):
-            for v in tree.children(u):
-                U[u].update(A[v])
-            k = len(tree.children(u))
-            A[u] = set(U[u].keys())
-            if any(count == k for count in U[u].values()):
-                A[u] = set(key for key, value in U[u].items() if value == k)
-    assert A == fitch_sets(tree, labels)
-    # Traverse downwards to compute the mutations
-    state = list(A[tree.root])[0]
-    f = {tree.root: state}
-    stack = [(tree.root, state)]
-    while len(stack) > 0:
-        u, state = stack.pop()
-        for v in tree.children(u):
-            child_state = state
-            if state not in A[v]:
-                child_state = list(A[v])[0]
-                f[v] = child_state
-            stack.append((v, child_state))
+    f = {tree.root: rng.randint(0, num_labels)}
+    for _ in range(num_mutations):
+        node = tree.root
+        while node in f:
+            node = rng.choice(list(tree.nodes()))
+        f[node] = rng.randint(0, num_labels)
+    return f
 
-    # node_labels = {u: "{}:{}:{}".format(u, A[u], U[u]) for u in tree.nodes()}
-    node_labels = {u: "   " for u in tree.samples()}
-    node_labels.update({u: f"{u}:{state}" for u, state in f.items()})
-    # print(f)
-    # print(tree.draw(format="unicode", node_labels=node_labels))
-
-
-    A1 = fitch_sets(tree, labels)
-    # node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
-    # t1 = tree.draw(format="unicode", node_labels=node_labels)
-    # print(t1)
-
-    A2 = fitch_sets_from_mutations(tree, f)
-    # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
-    # t1 = tree.draw(format="unicode", node_labels=node_labels)
-    # print(t1)
-
-    # Check that all paths from mutations upwards are correct.
-    for u in f.keys():
-        while u != -1:
-            assert A2[u] == A1[u]
+def project_genotypes(tree, mutations):
+    genotypes = np.zeros(tree.tree_sequence.num_samples, dtype=np.uint8)
+    for j, u in enumerate(tree.tree_sequence.samples()):
+        while u not in mutations:
             u = tree.parent(u)
+        genotypes[j] = mutations[u]
+    return genotypes
+
+
+def get_parsimonious_mutations_by_projection(tree, mutations):
+    genotypes = project_genotypes(tree, mutations)
+    ancestral_state, (node, _, state) = tree.reconstruct(genotypes)
+    f = {tree.root: ancestral_state}
+    f.update(dict(zip(node, state)))
+    return f
+
+def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
+    f1 = random_mutations(tree, num_mutations, num_labels=num_labels, seed=seed)
+    # print(f1)
+    f2 = get_parsimonious_mutations_by_projection(tree, f1)
+    g2 = project_genotypes(tree, f2)
+    # print(f2)
+    f3 = get_parsimonious_mutations(tree, f1)
+    g3 = project_genotypes(tree, f3)
+    # print(f3)
+    print(len(f1), len(f2), len(f3))
+    assert len(f2) == len(f3)
+    # for f in [f1, f2, f3]:
+    #     node_labels = {u: f"{u}  " for u in tree.nodes()}
+    #     node_labels.update({u: f"{u}:{state}" for u, state in f.items()})
+    #     print(f)
+    #     print(tree.draw(format="unicode", node_labels=node_labels))
+    # print(g2)
+    # print(g3)
+    assert np.array_equal(g2, g3)
+
+    # rng = random.Random(seed)
+    # labels = [rng.randint(0, num_labels) for _ in range(tree.tree_sequence.num_samples)]
+    # # compute the inital Fitch sets.
+    # A = [set() for _ in range(tree.num_nodes)]
+    # U = [collections.Counter() for _ in range(tree.num_nodes)]
+    # for label, sample in zip(labels, tree.tree_sequence.samples()):
+    #     A[sample].add(label)
+    # for u in tree.nodes(order="postorder"):
+    #     if tree.is_internal(u):
+    #         for v in tree.children(u):
+    #             U[u].update(A[v])
+    #         k = len(tree.children(u))
+    #         A[u] = set(U[u].keys())
+    #         if any(count == k for count in U[u].values()):
+    #             A[u] = set(key for key, value in U[u].items() if value == k)
+    # assert A == fitch_sets(tree, labels)
+    # # Traverse downwards to compute the mutations
+    # state = list(A[tree.root])[0]
+    # f = {tree.root: state}
+    # stack = [(tree.root, state)]
+    # while len(stack) > 0:
+    #     u, state = stack.pop()
+    #     for v in tree.children(u):
+    #         child_state = state
+    #         if state not in A[v]:
+    #             child_state = list(A[v])[0]
+    #             f[v] = child_state
+    #         stack.append((v, child_state))
+
+
+    # A1 = fitch_sets(tree, labels)
+    # # node_labels = {u: "{}:{}".format(u, A1[u]) for u in tree.nodes()}
+    # # t1 = tree.draw(format="unicode", node_labels=node_labels)
+    # # print(t1)
+
+    # A2 = fitch_sets_from_mutations(tree, f)
+    # # node_labels = {u: "{}:{}".format(u, A2[u]) for u in tree.nodes()}
+    # # t1 = tree.draw(format="unicode", node_labels=node_labels)
+    # # print(t1)
+
+    # # Check that all paths from mutations upwards are correct.
+    # for u in f.keys():
+    #     while u != -1:
+    #         assert A2[u] == A1[u]
+    #         u = tree.parent(u)
 
 
 def incremental_fitch_dev():
-    ts = msprime.simulate(1144, recombination_rate=0, random_seed=2)
-    for num_labels in range(2, 10):
-        print(num_labels)
-        for seed in range(1, 100):
-            dynamic_fitch_single_tree(ts.first(), seed, num_labels)
+    ts = msprime.simulate(11150, recombination_rate=0, random_seed=2)
+    # dynamic_fitch_single_tree(ts.first(), num_mutations=16, num_labels=3, seed=3)
+    for num_mutations in range(200):
+        for num_labels in range(2, 10):
+            print("===============", "muts = ", num_mutations, "labels = ", num_labels)
+            for seed in range(1, 4):
+                dynamic_fitch_single_tree(
+                    ts.first(), num_mutations=num_mutations, num_labels=num_labels, seed=seed)
 
     # for _ in range(100):
     # for _ in range(1):
