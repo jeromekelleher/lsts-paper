@@ -892,6 +892,13 @@ def ls_forward_tree_naive(h, alleles, ts, rho, mu):
 
 def compress_efficient(tree, f, N, M):
 
+    # We'd like to get rid of this sort. The order of M is determined by the
+    # topological ordering coming from the inorder traversal below. This should
+    # be sufficient here. However, it does mean that the nodes aren't in strictly
+    # time increasing order, so it's not clear where we can insert values into the
+    # array safely elsewhere. What are the exact ordering requirements here? Is
+    # there anyway we can avoid then, barring a sort? Sorting the ~50 values
+    # probably won't be a bottleneck, but it's an extra hassle.
     M.sort(key=lambda u: tree.time(u))
     A = [set() for _ in range(tree.num_nodes)]
     for u in M:
@@ -925,11 +932,11 @@ def compress_efficient(tree, f, N, M):
     assert A == A2
     f_dict = get_parsimonious_mutations(tree, {u: f[u] for u in M})
 
-    mutations = {u: f[u] for u in M}
+    f_copy = f.copy()
     f[:] = -1
     M.clear()
 
-    old_state = mutations[tree.root]
+    old_state = f_copy[tree.root]
     new_state = list(A[tree.root])[0]
     f[tree.root] = new_state
     M.append(tree.root)
@@ -939,8 +946,8 @@ def compress_efficient(tree, f, N, M):
         # print("VISIT", u, old_state, new_state)
         for v in tree.children(u):
             old_child_state = old_state
-            if v in mutations:
-                old_child_state = mutations[v]
+            if f_copy[v] != -1:
+                old_child_state = f_copy[v]
             if len(A[v]) > 0:
                 new_child_state = new_state
                 if new_state not in A[v]:
