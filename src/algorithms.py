@@ -17,6 +17,7 @@ import msprime
 import tskit
 import numpy as np
 import cairo
+import attr
 
 import hmm
 
@@ -896,8 +897,380 @@ def ls_forward_tree(h, alleles, ts, mu, rho, precision=10):
     """
     Forward matrix computation based on a tree sequence.
     """
-    fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
+    # fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
+    fa = ForwardAlgorithmMutationTree(ts, rho, mu, precision=precision)
     return fa.run(h, alleles)
+
+
+@attr.s
+class ProbabilityMutation(object):
+    node = attr.ib(default=-1)
+    probability = attr.ib(default=-1)
+    num_samples = attr.ib(default=0)
+    # Triply linked tree. Each of these refers to the index in a list of nodes.
+    parent = attr.ib(default=-1)
+    child = attr.ib(default=-1)
+    sib = attr.ib(default=-1)
+
+
+class ForwardAlgorithmMutationTree(object):
+    """
+    Runs the Li and Stephens forward algorithm.
+    """
+    def __init__(self, ts, mu, rho, precision=10):
+        self.ts = ts
+        self.mu = mu
+        self.rho = rho
+        self.precision = precision
+        n, m = ts.num_samples, ts.num_sites
+        # The output F matrix. Each site is a dictionary containing a compressed
+        # probability array.
+        self.F = [None for _ in range(m)]
+        # The output normalisation array.
+        self.S = np.zeros(m)
+        # The list of ProbabilityMutations
+        self.P = []
+        # The index of the ProbabilityMutation associated with a given node, or -1.
+        self.Q = np.zeros(ts.num_nodes, dtype=int) - 1
+
+    def check_integrity(self, tree):
+        print(self.draw_tree(tree))
+        Q_copy = self.Q.copy()
+        num_nodes = 0
+        for j, pm in enumerate(self.P):
+            print(pm)
+            if pm.node != -1:
+                assert self.Q[pm.node] == j
+                assert pm.probability >= 0
+                Q_copy[pm.node] = -1
+                num_nodes += 1
+        assert np.all(Q_copy == -1)
+
+        visited_nodes = 0
+        for tree_root in tree.roots:
+            root = self.Q[tree_root]
+            assert root != -1
+            # Rebuild the mutation tree.
+            mutation_tree = collections.defaultdict(list)
+            stack = [(tree_root, root)]
+            while len(stack) > 0:
+                tree_node, parent_mutation = stack.pop()
+                for child in tree.children(tree_node):
+                    child_mutation = parent_mutation
+                    if self.Q[child] != -1:
+                        child_mutation = self.Q[child]
+                        mutation_tree[parent_mutation].append(child_mutation)
+                    stack.append((child, child_mutation))
+
+            # Traverse the mutation tree.
+            stack = [root]
+            while len(stack) > 0:
+                j = stack.pop()
+                pm = self.P[j]
+                visited_nodes += 1
+                local_children = []
+                child = pm.child
+                while child != -1:
+                    local_children.append(child)
+                    pmc = self.P[child]
+                    assert pmc.parent == j
+                    stack.append(child)
+                    child = pmc.sib
+                print("children", local_children, mutation_tree[j])
+                assert sorted(local_children) == sorted(mutation_tree[j])
+        assert visited_nodes == num_nodes
+
+    def draw_tree(self, tree):
+        node_labels = {u: f"{u}  " for u in tree.nodes()}
+        for pm in self.P:
+            if pm.node != -1:
+                node_labels[pm.node] = "{} :{:.3f}=({}, {}, {})".format(
+                    pm.node, pm.probability, pm.parent, pm.child, pm.sib)
+        return tree.draw(format="unicode", node_labels=node_labels)
+
+
+    def duplicate_probability_mutation(self, tree, tree_node):
+        """
+        Inserts a new node into the probability mutation tree at the specified
+        node which carries the same value as it currently inherits
+        """
+        print("Insert duplicate", tree_node)
+        print(self.draw_tree(tree))
+        P = self.P
+        Q = self.Q
+        # Find the next probability mutation above us in the tree.
+        u = tree_node
+        while Q[u] == tskit.NULL:
+            u = tree.parent(u)
+        parent_id = Q[u]
+        parent_pm = P[parent_id]
+        # For each of the children, check if the current node exists on the path
+        # from the child mutation to the parent.
+        child_id = parent_pm.child
+        last_child_pm = None
+        while child_id != tskit.NULL:
+            child_pm = P[child_id]
+            u = P[child_id].node
+            while u != parent_pm.node and u != tree_node:
+                u = tree.parent(u)
+            if u == tree_node:
+                break
+            last_child_pm = child_pm
+            child_id = P[child_id].sib
+        # Create the new mutation
+        q = len(P)
+        Q[tree_node] = q
+        print("PARENT = ", parent_pm)
+        print("child_id = ", child_id)
+        pm = ProbabilityMutation(
+            node=tree_node, probability=parent_pm.probability, parent=parent_id)
+        if child_id != tskit.NULL:
+            pm.sib = child_pm.sib
+            child_pm.sib = -1
+            child_pm.parent = q
+            pm.child = child_id
+        if last_child_pm is not None:
+            last_child_pm.sib = q
+        else:
+            parent_pm.child = q
+        P.append(pm)
+
+        print("DONE")
+        print(self.draw_tree(tree))
+
+    def remove_edge(self, tree, edge):
+        print("REMOVE EDGE")
+        if self.Q[edge.child] == -1:
+            self.duplicate_probability_mutation(tree, edge.child)
+        root = self.Q[edge.child]
+        # Now we need to break the tree rooted at this node out of the
+        # overall mutation tree so that it can be grafted back in somewhere
+        # else
+        root_pm = self.P[root]
+        assert root_pm.parent != -1
+        parent_pm = self.P[root_pm.parent]
+        print("parent = ", parent_pm)
+        sib_id = parent_pm.child
+        last_sib_id = -1
+        while sib_id != root:
+            print("Root = ", root_pm, "sib = ", sib_id)
+            last_sib_id = sib_id
+            sib_id = self.P[sib_id].sib
+        if last_sib_id == -1:
+            parent_pm.child = root_pm.sib
+        else:
+            last_sib_pm = self.P[last_sib_id]
+            last_sib_pm.sib = root_pm.sib
+        root_pm.sib = -1
+        root_pm.parent = -1
+
+    def insert_edge(self, tree, edge):
+        print("INSERT", edge)
+        Q = self.Q
+        P = self.P
+        # TODO need to repair parent/sib/etc connections here.
+        if Q[edge.parent] == -1:
+            # If the parent has no mutation, this is the first child to be added, so
+            # we move the mutation up one node.
+            q = Q[edge.child]
+            Q[edge.child] = -1
+            Q[edge.parent] = q
+            P[q].node = edge.parent
+        elif P[Q[edge.parent]].probability == P[Q[edge.child]].probability:
+            # If the parent and the child have mutations with the same value
+            # then delete the child mutation.
+            P[Q[edge.child]].node = -1
+            Q[edge.child] = -1
+
+
+    def compress(self, tree):
+        print(self.draw_tree(tree))
+
+        self.check_integrity(tree)
+        Q = self.Q
+        P = self.P
+        A = [set() for _ in range(self.ts.num_nodes)]
+        # Post-order traversal of the mutation tree.
+        stack = [Q[tree.root]]
+        k = tskit.NULL
+        while len(stack) > 0:
+            j = stack[-1]
+            child = P[j].child
+            if child != tskit.NULL and j != k:
+                while child != tskit.NULL:
+                    stack.append(child)
+                    child = P[child].sib
+            else:
+                k = P[j].parent
+                stack.pop()
+                if k != tskit.NULL:
+                    # Visit the probability mutation at j
+                    pm = P[j]
+                    # State of mutation is always in node set.
+                    A[pm.node].add(pm.probability)
+                    parent_state = P[k].probability
+                    u = tree.parent(pm.node)
+                    while u != -1:
+                        child_sets = []
+                        for v in tree.children(u):
+                            # If the set for a given child is empty, then we know it inherits
+                            # directly from the parent state and must be a singleton set.
+                            if len(A[v]) == 0:
+                                child_sets.append({parent_state})
+                            else:
+                                child_sets.append(A[v])
+                        A[u] = set.intersection(*child_sets)
+                        if len(A[u]) == 0:
+                            A[u] = set.union(*child_sets)
+                        u = tree.parent(u)
+
+
+        print(tree.draw(format="unicode", node_labels={u: str(A[u]) for u in tree.nodes()}))
+
+        f = {pm.node: pm.probability for pm in P if pm.node != -1}
+        A2 = fitch_sets_from_mutations(tree, f)
+        assert A == A2
+
+        for pm in P:
+            if pm.node != -1:
+                Q[pm.node] = -1
+        assert np.all(Q == -1)
+        P.clear()
+
+        old_state = f[tree.root]
+        new_state = list(A[tree.root])[0]
+        P.append(ProbabilityMutation(node=tree.root, probability=new_state))
+        Q[tree.root] = 0
+        stack = [(tree.root, old_state, new_state, 0)]
+        while len(stack) > 0:
+            u, old_state, new_state, parent_mutation = stack.pop()
+            print("VISIT", u, old_state, new_state, parent_mutation)
+            for v in tree.children(u):
+                print("\t", v, new_state, A[v], new_state in A[v])
+                old_child_state = old_state
+                mutation_required = False
+                if v in f:
+                    old_child_state = f[v]
+                if len(A[v]) > 0:
+                    new_child_state = new_state
+                    child_parent_mutation = parent_mutation
+                    if new_state not in A[v]:
+                        mutation_required = True
+                        new_child_state = list(A[v])[0]
+                        # Actual mutation is added below
+                        child_parent_mutation = len(P)
+                    stack.append((v, old_child_state, new_child_state, child_parent_mutation))
+                else:
+                    if old_child_state != new_state:
+                        mutation_required = True
+                        new_child_state = old_child_state
+
+                print("\t", v, "new_child_state =  ", new_child_state)
+                if mutation_required:
+                    print("\tADDING MUTATION", v)
+                    parent_pm = P[parent_mutation]
+                    pm = ProbabilityMutation(
+                        node=v, probability=new_child_state, parent=parent_mutation,
+                        sib=parent_pm.child)
+                    parent_pm.child = len(P)
+                    self.Q[v] = len(P)
+                    P.append(pm)
+
+        self.check_integrity(tree)
+
+        f_dict = get_parsimonious_mutations(tree, f)
+        print(f_dict)
+        print({pm.node: pm.probability for pm in P})
+        assert f_dict == {pm.node: pm.probability for pm in P}
+
+        for pm in P:
+            pm.num_samples = tree.num_samples(pm.node)
+
+        for pm in P:
+            # Subtract the number of samples subtended by each child
+            child = pm.child
+            while child != -1:
+                child_pm = P[child]
+                pm.num_samples -= child_pm.num_samples
+                child = child_pm.sib
+
+        self.check_integrity(tree)
+
+
+    def run(self, h, alleles):
+        n = self.ts.num_samples
+        Q = self.Q
+        P = self.P
+
+        for j, u in enumerate(self.ts.samples()):
+            P.append(ProbabilityMutation(node=u, probability=1 / n))
+            Q[u] = j
+
+        tree = tskit.Tree(self.ts)
+        for (left, right), edges_out, edges_in in self.ts.edge_diffs():
+            # print("start", left, right, M)
+            self.check_integrity(tree)
+            print("BEFORE")
+            print(self.draw_tree(tree))
+            for edge in edges_out:
+                self.remove_edge(tree, edge)
+            for edge in edges_in:
+                self.insert_edge(tree, edge)
+
+            tree.next()
+            print("AFTER")
+            print(self.draw_tree(tree))
+            self.check_integrity(tree)
+
+            # print("NEW TREE")
+            # after = draw_tree(tree, f)
+            # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+            #     print(l1, "|", l2)
+
+            for site in tree.sites():
+                l = site.id
+                print("l = ", l, h[l], site.mutations)
+                # print("P = ", self.P)
+                self.check_integrity(tree)
+                for mutation in site.mutations:
+                    if Q[mutation.node] == -1:
+                        self.duplicate_probability_mutation(tree, mutation.node)
+                self.check_integrity(tree)
+
+                mutations = {mut.node: mut.derived_state for mut in site.mutations}
+                for pm in P:
+                    u = pm.node
+                    if u != tskit.NULL:
+                        assert pm.probability >= 0
+                        # Get the state at u. TODO we can add a state_cache here.
+                        v = u
+                        while v != tskit.NULL and v not in mutations:
+                            v = tree.parent(v)
+                        allele = mutations.get(v, site.ancestral_state)
+                        state = alleles[site.id].index(allele)
+
+                        # Compute the F value for u.
+                        p_t = pm.probability * (1 - self.rho[l]) + self.rho[l] / n
+                        p_e = self.mu[l]
+                        if h[l] == state:
+                            p_e = 1 - (len(alleles[l]) - 1) * self.mu[l]
+                        pm.probability = round(p_t * p_e, self.precision)
+                        assert pm.probability >= 0
+
+                self.compress(tree)
+                # Normalise and store
+                self.S[l] = sum(pm.probability * pm.num_samples for pm in P)
+                for pm in P:
+                    pm.probability /= self.S[l]
+                self.F[l] = {pm.node: pm.probability for pm in P}
+
+                # self.S[l] = sum(N[u] * f[u] for u in M)
+                # for u in M:
+                #     f[u] /= self.S[l]
+                # # print("f = ", f)
+                # self.F[l] = {u: f[u] for u in M}
+
+        return self.F, self.S
 
 
 class ForwardAlgorithm(object):
@@ -943,6 +1316,8 @@ class ForwardAlgorithm(object):
         # probably won't be a bottleneck, but it's an extra hassle.
         M.sort(key=lambda u: tree.time(u))
         A = [set() for _ in range(tree.num_nodes)]
+        print("computing fitch sets for ")
+        print(tree.draw(format="unicode"))
         for u in M:
             # State of mutation is always in node set.
             mutation_state = f[u]
@@ -1068,6 +1443,7 @@ class ForwardAlgorithm(object):
                 # print("l = ", l, h[l], site.mutations)
                 # print("M = ", M)
                 # print("f = ", {u: f[u] for u in M})
+
                 assert np.all(f[M] >= 0)
                 for mutation in site.mutations:
                     u = mutation.node
@@ -1075,6 +1451,7 @@ class ForwardAlgorithm(object):
                         u = tree.parent(u)
                     if f[mutation.node] == -1:
                         M.append(mutation.node)
+                    assert u != tskit.NULL
                     f[mutation.node] = 0 if u == tskit.NULL else f[u]
 
                 mutations = {mut.node: mut.derived_state for mut in site.mutations}
