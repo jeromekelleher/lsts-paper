@@ -1321,19 +1321,21 @@ class ForwardAlgorithm(object):
         N = self.N
 
         N[M] = 0
-
+        values = np.unique([f[u] for u in M])
         M.sort(key=lambda u: tree.time(u))
         A = [set() for _ in range(tree.num_nodes)]
         for u in M:
             # State of mutation is always in node set.
-            mutation_state = f[u]
+            mutation_state = np.searchsorted(values, f[u])
+            assert values[mutation_state] == f[u]
             A[u].add(mutation_state)
             # Find parent state
             v = tree.parent(u)
             while v != -1 and f[v] == -1:
                 v = tree.parent(v)
             if v != -1:
-                parent_state = f[v]
+                parent_state = np.searchsorted(values, f[v])
+                assert values[parent_state] == f[v]
                 u = tree.parent(u)
                 while u != -1:
                     child_sets = []
@@ -1350,69 +1352,102 @@ class ForwardAlgorithm(object):
                     u = tree.parent(u)
 
         A2 = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+        A3 = [{values[j] for j in node_set} for node_set in A]
         # print(A)
         # print(A2)
-        assert A == A2
+        # print(A3)
+        assert A3 == A2
+        # print(tree.draw(format="unicode", node_labels={u: str(A[u]) for u in tree.nodes()}))
         f_dict = get_parsimonious_mutations(tree, {u: f[u] for u in M})
+        f_dict2 = get_parsimonious_mutations_by_projection(
+            tree, {u: np.searchsorted(values, f[u]) for u in M})
 
         f_copy = f.copy()
         f[:] = -1
         M.clear()
 
-        old_state = f_copy[tree.root]
+        # For some bizarre reason this code which should be functionally identical
+        # to the code below isn't working, even though the only thing we've done
+        # is swap floating point values for their indexes in the values array.
+
+        # No idea. I'm going to the pub.
+
+
+        old_state = np.searchsorted(values, f_copy[tree.root])
+        assert values[old_state] == f_copy[tree.root]
         new_state = list(A[tree.root])[0]
-        f[tree.root] = new_state
+        f[tree.root] = values[new_state]
         M.append(tree.root)
         mutation_parents = [-1]
         stack = [(tree.root, old_state, new_state, 0)]
         while len(stack) > 0:
             u, old_state, new_state, mutation_parent = stack.pop()
-            # print("VISIT", u, old_state, new_state)
+            print("VISIT", u, old_state, new_state)
             for v in tree.children(u):
                 old_child_state = old_state
                 if f_copy[v] != -1:
-                    old_child_state = f_copy[v]
+                    old_child_state = np.searchsorted(values, f_copy[v])
+                    assert values[old_child_state] == f_copy[v]
                 if len(A[v]) > 0:
                     new_child_state = new_state
                     child_mutation_parent = mutation_parent
                     if new_state not in A[v]:
                         new_child_state = list(A[v])[0]
-                        f[v] = new_child_state
+                        f[v] = values[new_child_state]
                         M.append(v)
                         child_mutation_parent = len(mutation_parents)
                         mutation_parents.append(mutation_parent)
                     stack.append((v, old_child_state, new_child_state, child_mutation_parent))
                 else:
                     if old_child_state != new_state:
-                        f[v] = old_child_state
+                        f[v] = values[old_child_state]
                         M.append(v)
                         mutation_parents.append(mutation_parent)
 
-                    # print("SKIP", v, old_child_state, new_state)
+                    print("SKIP", v, old_child_state, new_state)
 
-        # print("HERE")
-        # print(f_dict)
-        # print({u: f[u] for u in M})
-        assert f_dict == {u: f[u] for u in M}
+        # A = A2
+
+        # old_state = f_copy[tree.root]
+        # new_state = list(A[tree.root])[0]
+        # f[tree.root] = new_state
+        # M.append(tree.root)
+        # mutation_parents = [-1]
+        # stack = [(tree.root, old_state, new_state, 0)]
+        # while len(stack) > 0:
+        #     u, old_state, new_state, mutation_parent = stack.pop()
+        #     for v in tree.children(u):
+        #         old_child_state = old_state
+        #         if f_copy[v] != -1:
+        #             old_child_state =  f_copy[v]
+        #         if len(A[v]) > 0:
+        #             new_child_state = new_state
+        #             child_mutation_parent = mutation_parent
+        #             if new_state not in A[v]:
+        #                 new_child_state = list(A[v])[0]
+        #                 f[v] = new_child_state
+        #                 M.append(v)
+        #                 child_mutation_parent = len(mutation_parents)
+        #                 mutation_parents.append(mutation_parent)
+        #             stack.append((v, old_child_state, new_child_state, child_mutation_parent))
+        #         else:
+        #             if old_child_state != new_state:
+        #                 f[v] = old_child_state
+        #                 M.append(v)
+        #                 mutation_parents.append(mutation_parent)
+
+        #             # print("SKIP", v, old_child_state, new_state)
+
+        print({u: f[u] for u in M})
+        print(f_dict)
+        print({u: np.searchsorted(values, f[u]) for u in M})
+        print(f_dict2)
+        print("lens = ", len(M), len(f_dict), len(f_dict2))
+        assert len(f_dict) == len(M)
         assert np.all(f[M] >= 0)
 
-        # print(self.draw_tree(tree))
-
-        # print(M)
-        # print(mutation_parents)
-        for u in M:
-            N[u] = tree.num_samples(u)
         for u, mutation_parent in zip(M, mutation_parents):
-            # v = tree.parent(u)
-            # while v != tskit.NULL and f[v] == -1:
-            #     v = tree.parent(v)
-            # print(mutation_parent, u, v, M[mutation_parent])
-            # if mutation_parent != -1:
-            #     assert v == M[mutation_parent]
-            # else:
-            #     assert v == -1
-
-            # if v != tskit.NULL:
+            N[u] = tree.num_samples(u)
             if mutation_parent != -1:
                 N[M[mutation_parent]] -= N[u]
 
@@ -1918,8 +1953,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    verify()
-    # develop()
+    # verify()
+    develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
