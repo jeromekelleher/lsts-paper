@@ -1307,23 +1307,23 @@ class ForwardAlgorithm(object):
         index[self.M] = 0
         assert np.all(self.f[index] == -1)
 
+    def draw_tree(self, tree):
+        node_labels = {u: f"{u}  " for u in tree.nodes()}
+        for u in self.M:
+            node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
+        return tree.draw(format="unicode", node_labels=node_labels)
+
+
     def compress(self, tree):
         self.check_integrity()
         M = self.M
         f = self.f
         N = self.N
 
-        # We'd like to get rid of this sort. The order of M is determined by the
-        # topological ordering coming from the inorder traversal below. This should
-        # be sufficient here. However, it does mean that the nodes aren't in strictly
-        # time increasing order, so it's not clear where we can insert values into the
-        # array safely elsewhere. What are the exact ordering requirements here? Is
-        # there anyway we can avoid then, barring a sort? Sorting the ~50 values
-        # probably won't be a bottleneck, but it's an extra hassle.
+        N[M] = 0
+
         M.sort(key=lambda u: tree.time(u))
         A = [set() for _ in range(tree.num_nodes)]
-        print("computing fitch sets for ")
-        print(tree.draw(format="unicode"))
         for u in M:
             # State of mutation is always in node set.
             mutation_state = f[u]
@@ -1363,9 +1363,10 @@ class ForwardAlgorithm(object):
         new_state = list(A[tree.root])[0]
         f[tree.root] = new_state
         M.append(tree.root)
-        stack = [(tree.root, old_state, new_state)]
+        mutation_parents = [-1]
+        stack = [(tree.root, old_state, new_state, 0)]
         while len(stack) > 0:
-            u, old_state, new_state = stack.pop()
+            u, old_state, new_state, mutation_parent = stack.pop()
             # print("VISIT", u, old_state, new_state)
             for v in tree.children(u):
                 old_child_state = old_state
@@ -1373,15 +1374,19 @@ class ForwardAlgorithm(object):
                     old_child_state = f_copy[v]
                 if len(A[v]) > 0:
                     new_child_state = new_state
+                    child_mutation_parent = mutation_parent
                     if new_state not in A[v]:
                         new_child_state = list(A[v])[0]
                         f[v] = new_child_state
                         M.append(v)
-                    stack.append((v, old_child_state, new_child_state))
+                        child_mutation_parent = len(mutation_parents)
+                        mutation_parents.append(mutation_parent)
+                    stack.append((v, old_child_state, new_child_state, child_mutation_parent))
                 else:
                     if old_child_state != new_state:
                         f[v] = old_child_state
                         M.append(v)
+                        mutation_parents.append(mutation_parent)
 
                     # print("SKIP", v, old_child_state, new_state)
 
@@ -1391,15 +1396,25 @@ class ForwardAlgorithm(object):
         assert f_dict == {u: f[u] for u in M}
         assert np.all(f[M] >= 0)
 
-        N[:] = 0
+        # print(self.draw_tree(tree))
+
+        # print(M)
+        # print(mutation_parents)
         for u in M:
             N[u] = tree.num_samples(u)
-        for u in M:
-            v = tree.parent(u)
-            while v != tskit.NULL and f[v] == -1:
-                v = tree.parent(v)
-            if v != tskit.NULL:
-                N[v] -= N[u]
+        for u, mutation_parent in zip(M, mutation_parents):
+            # v = tree.parent(u)
+            # while v != tskit.NULL and f[v] == -1:
+            #     v = tree.parent(v)
+            # print(mutation_parent, u, v, M[mutation_parent])
+            # if mutation_parent != -1:
+            #     assert v == M[mutation_parent]
+            # else:
+            #     assert v == -1
+
+            # if v != tskit.NULL:
+            if mutation_parent != -1:
+                N[M[mutation_parent]] -= N[u]
 
         self.check_integrity()
 
@@ -1903,8 +1918,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    # verify()
-    develop()
+    verify()
+    # develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
