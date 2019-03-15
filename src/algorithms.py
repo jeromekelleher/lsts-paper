@@ -897,8 +897,8 @@ def ls_forward_tree(h, alleles, ts, mu, rho, precision=10):
     """
     Forward matrix computation based on a tree sequence.
     """
-    # fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
-    fa = ForwardAlgorithmMutationTree(ts, rho, mu, precision=precision)
+    fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
+    # fa = ForwardAlgorithmMutationTree(ts, rho, mu, precision=precision)
     return fa.run(h, alleles)
 
 
@@ -912,7 +912,13 @@ class ProbabilityMutation(object):
     child = attr.ib(default=-1)
     sib = attr.ib(default=-1)
 
-
+# This seemed like a nice idea at, so keeping it lying around for now. It's a
+# partial implementatation of the forward algorithm which stores the mutations
+# in an embedded tree. Where this does reduce the need to do upwards traversals
+# to determine the state of a probability, it's a lot of extra complexity. In
+# particular, maintaining the embedded tree requires a lot of traversing around
+# in the first place during tree transitions, so it's not at all clear it would
+# be faster.
 class ForwardAlgorithmMutationTree(object):
     """
     Runs the Li and Stephens forward algorithm.
