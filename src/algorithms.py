@@ -91,11 +91,24 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
     Given a tree and a set of mutations on the tree, return the corresponding
     Fitch sets for all nodes that are ancestral to mutations. This is done
     by first constructing an embedded mutation tree.
+
+
+    This would be a neat idea if we could make it work, but it ends up being
+    quite complex. The embedded tree in the worst case is as complicated as the
+    real tree, even though most of the time it's a small number of nodes on top
+    of the mutations. The main problem is that we can get to a situation where
+    we must have mutations over the anonymous dangling nodes which are
+    supposed to represent the intermediate tree nodes.
+
+    Might be worth revisiting, as it seems like it should work, so not deleting
+    for now. The attractive thing about this is that we should be able to
+    fit the entire mutation tree in cache, and it would be far more efficient to
+    run Fitch on this embedded tree rather than the full tree.
     """
 
-#     node_labels = {u: f"{u} " for u in tree.nodes()}
-#     node_labels.update({u: f"{u}:{mutations[u]}" for u in mutations})
-#     print(tree.draw(format="unicode", node_labels=node_labels))
+    node_labels = {u: f"{u} " for u in tree.nodes()}
+    node_labels.update({u: f"{u}:{mutations[u]}" for u in mutations})
+    print(tree.draw(format="unicode", node_labels=node_labels))
 
     mutation_nodes = sorted(mutations.keys(), key=lambda u: tree.time(u))
     x = np.zeros(tree.tree_sequence.num_nodes, dtype=int) - 1
@@ -175,7 +188,7 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
 
     for mtn in mutation_tree:
         if mtn.num_children == 1:
-            # print("UNARY NODE", mtn)
+            print("UNARY NODE", mtn, mtn.tree_node)
             new_mtn = MutationTreeNode(
                 index=len(mutation_tree), parent=mtn.index, sib=mtn.child)
             mutation_tree.append(new_mtn)
@@ -195,8 +208,8 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
     tables.sort()
     ts = tables.tree_sequence()
     embedded_t = ts.first()
-    # node_labels = {j: f"{j}:{mtn.tree_node}" for j, mtn in enumerate(mutation_tree)}
-    # print(embedded_t.draw(format="unicode", node_labels=node_labels))
+    node_labels = {j: f"{j}:{mtn.tree_node}" for j, mtn in enumerate(mutation_tree)}
+    print(embedded_t.draw(format="unicode", node_labels=node_labels))
 
     stack = [len(mutations) - 1]
     while len(stack) > 0:
@@ -219,6 +232,11 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
             A[j] = set.intersection(*[A[k] for k in embedded_t.children(j)])
             if len(A[j]) == 0:
                 A[j] = set.union(*[A[k] for k in embedded_t.children(j)])
+            for k in embedded_t.children(j):
+                mtn = mutation_tree[k]
+                # if mtn.tree_node == -1:
+                #     print("FIXED CHILD", k, A[k], " A = ", A[j])
+                #     A[j] = A[k]
         else:
             # print("LEAF", mutation_tree[j])
             k = j
@@ -227,12 +245,36 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
                 u = mutation_tree[k].tree_node
             A[j] = {mutations[u]}
             # print("resolved to ", A[j])
-    # print(A)
+
+
+    node_labels = {j: f"{j}:{A[j]}" for j, mtn in enumerate(mutation_tree)}
+    print(embedded_t.draw(format="unicode", node_labels=node_labels))
+
+    # Now traverse down to compute the parsimonious assigments on the
+    # mutation tree.
+    root = len(mutations) - 1
+    ancestral_state = list(A[root])[0]
+    f = {mutation_tree[root].tree_node: ancestral_state}
+    stack = [(root, ancestral_state)]
+    while len(stack) > 0:
+        j, state = stack.pop()
+        k = mutation_tree[j].child
+        while k != -1:
+            child_state = state
+            if state not in A[k]:
+                child_state = list(A[k])[0]
+                u = mutation_tree[k].tree_node
+                print("u = ", u, "k = ", k)
+                assert u != -1
+                f[u] = child_state
+            stack.append((k, child_state))
+            k = mutation_tree[k].sib
+
     A2 = [None for _ in range(tree.tree_sequence.num_nodes)]
     for j, mtb in enumerate(mutation_tree):
         if mtb.tree_node != -1:
             A2[mtb.tree_node] = A[j]
-    return A2
+    return A2, f
 
 
 def get_parsimonious_mutations(tree, mutations):
@@ -494,7 +536,8 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     g3 = project_genotypes(tree, f3)
     A1 = fitch_sets(tree, g2)
     A2 = fitch_sets_from_mutations(tree, f1)
-    A3 = fitch_sets_from_mutations_by_embedding(tree, f1)
+    A3, f4 = fitch_sets_from_mutations_by_embedding(tree, f1)
+    g4 = project_genotypes(tree, f4)
 
     # print("====================")
     # print("A = ", A1)
@@ -515,22 +558,24 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     for u in f1:
         assert A1[u] == A3[u]
     assert len(f2) == len(f3)
+    assert len(f4) == len(f3)
     assert np.array_equal(g2, g3)
+    assert np.array_equal(g3, g4)
 
 
 def incremental_fitch_dev():
-    # ts = msprime.simulate(10**6, recombination_rate=0, random_seed=2)
-    # dynamic_fitch_single_tree(ts.first(), num_mutations=100, num_labels=5, seed=3)
-    for n in range(3, 100):
-        ts = msprime.simulate(n, recombination_rate=0, random_seed=2)
-        for num_mutations in range(min(50, n)):
-        # for num_mutations in [10]:
-            for num_labels in range(2, 10):
-                # print("===============", "muts = ", num_mutations, "labels = ", num_labels)
-                print(n, num_mutations, num_labels)
-                for seed in range(1, 4):
-                    dynamic_fitch_single_tree(
-                        ts.first(), num_mutations=num_mutations, num_labels=num_labels, seed=seed)
+    ts = msprime.simulate(7, recombination_rate=0, random_seed=2)
+    dynamic_fitch_single_tree(ts.first(), num_mutations=5, num_labels=5, seed=3)
+    # for n in range(3, 100):
+    #     ts = msprime.simulate(n, recombination_rate=0, random_seed=2)
+    #     for num_mutations in range(min(50, n)):
+    #     # for num_mutations in [10]:
+    #         for num_labels in range(2, 10):
+    #             # print("===============", "muts = ", num_mutations, "labels = ", num_labels)
+    #             print(n, num_mutations, num_labels)
+    #             for seed in range(1, 4):
+    #                 dynamic_fitch_single_tree(
+    #                     ts.first(), num_mutations=num_mutations, num_labels=num_labels, seed=seed)
 
 
 def generate_site_mutations(tree, position, mu, site_table, mutation_table,
