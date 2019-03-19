@@ -80,8 +80,10 @@ def fitch_sets_from_mutations(tree, mutations):
 class MutationTreeNode(object):
     tree_node = attr.ib(default=-1)
     parent = attr.ib(default=-1)
-    index = attr.ib(default=-1)
+    child = attr.ib(default=-1)
+    sib = attr.ib(default=-1)
     num_children = attr.ib(default=0)
+    index = attr.ib(default=-1)
 
 
 def fitch_sets_from_mutations_by_embedding(tree, mutations):
@@ -91,9 +93,9 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
     by first constructing an embedded mutation tree.
     """
 
-    node_labels = {u: f"{u} " for u in tree.nodes()}
-    node_labels.update({u: f"{u}:{mutations[u]}" for u in mutations})
-    print(tree.draw(format="unicode", node_labels=node_labels))
+#     node_labels = {u: f"{u} " for u in tree.nodes()}
+#     node_labels.update({u: f"{u}:{mutations[u]}" for u in mutations})
+#     print(tree.draw(format="unicode", node_labels=node_labels))
 
     mutation_nodes = sorted(mutations.keys(), key=lambda u: tree.time(u))
     x = np.zeros(tree.tree_sequence.num_nodes, dtype=int) - 1
@@ -105,6 +107,7 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
         # print("mutation:", j, "tree_node = ", u)
         mtn = mutation_tree[j]
         u = tree.parent(u)
+        assert u != -1
         while x[u] == -1:
             # print("\tsetting ", u, "->", mtn.index)
             x[u] = mtn.index
@@ -113,7 +116,6 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
         if mutation_tree[x[u]].tree_node == u:
             # We've hit an existing node in the tree.
             mtn.parent = x[u]
-            mutation_tree[x[u]].num_children += 1
             # print("\tHit existing internal", u, mtn)
         elif u != -1:
             # print("\tCreating new join node at ", u)
@@ -130,36 +132,56 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
             while x[u] == x_old:
                 x[u] = new_mtn.index
                 u = tree.parent(u)
-    print(x)
+
+    # If there are edges in the mutation tree which span more than a single edge
+    # in the overall tree, insert a join node and dangling leaf to represent all
+    # of these subtrees in the Fitch sets.
     for j in range(len(mutation_tree)):
         mtn = mutation_tree[j]
-        print("Check", mtn)
-        u = mtn.tree_node
-        v = tree.parent(u)
-        if v != -1 and x[u] == x[v]:
-            # print("Need to insert sib for ", u , " beneath ", v)
-            leaf_mtn = MutationTreeNode(index=len(mutation_tree))
-            mutation_tree.append(leaf_mtn)
-            parent_mtn = MutationTreeNode(
-                tree_node=v, index=len(mutation_tree), parent=mtn.parent)
-            mutation_tree.append(parent_mtn)
-            leaf_mtn.parent = parent_mtn.index
-            mtn.parent = parent_mtn.index
-            # print("leaf = ", leaf_mtn)
-            # print("parent = ", parent_mtn)
-            # print("sib = ", mtn)
-            u = v
-            while x[u] == mtn.index:
-                x[u] = parent_mtn.index
+        if mtn.parent != -1:
+            parent_mtn = mutation_tree[mtn.parent]
+            u = tree.parent(mtn.tree_node)
+            nodes = []
+            if u != parent_mtn.tree_node:
+                nodes.append(u)
                 u = tree.parent(u)
+                if u != parent_mtn.tree_node:
+                    nodes.append(u)
+            # print("nodes = ", nodes)
+            for u in nodes:
+                # print("INSERT JOIN and DANGLE", u)
+                join_mtn = MutationTreeNode(
+                    tree_node=u, index=len(mutation_tree), parent=parent_mtn.index)
+                mutation_tree.append(join_mtn)
+                mtn.parent = join_mtn.index
+                leaf_mtn = MutationTreeNode(
+                    parent=join_mtn.index, index=len(mutation_tree))
+                mutation_tree.append(leaf_mtn)
+                # print(mtn)
+                # print(parent_mtn)
+                x_old = x[u]
+                while u != -1 and x[u] == x_old:
+                    x[u] = join_mtn.index
+                    u = tree.parent(u)
+                mtn = join_mtn
 
+    # Update the triply-linked tree.
+    for mtn in mutation_tree:
+        if mtn.parent != -1:
+            parent_mtn = mutation_tree[mtn.parent]
+            mtn.sib = parent_mtn.child
+            parent_mtn.child = mtn.index
+            parent_mtn.num_children += 1
 
-#     for j in range(len(mutation_tree)):
-#         if mtn.num_children == 1:
-#             leaf_mtn = MutationTreeNode(index=len(mutation_tree), parent=j)
-#             mutation_tree.append(leaf_mtn)
-
-        #     # new_mtn.parent = mutation_tree[x[u]].parent
+    for mtn in mutation_tree:
+        if mtn.num_children == 1:
+            # print("UNARY NODE", mtn)
+            new_mtn = MutationTreeNode(
+                index=len(mutation_tree), parent=mtn.index, sib=mtn.child)
+            mutation_tree.append(new_mtn)
+            mtn.child = new_mtn.index
+            mtn.num_children += 1
+    print("size of mutation tree = ", len(mutation_tree))
 
     # node_labels = {u: f"{u}:{x[u]}" for u in tree.nodes()}
     # print(tree.draw(format="unicode", node_labels=node_labels))
@@ -173,8 +195,21 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
     tables.sort()
     ts = tables.tree_sequence()
     embedded_t = ts.first()
-    node_labels = {j: f"{j}:{mtn.tree_node}" for j, mtn in enumerate(mutation_tree)}
-    print(embedded_t.draw(format="unicode", node_labels=node_labels))
+    # node_labels = {j: f"{j}:{mtn.tree_node}" for j, mtn in enumerate(mutation_tree)}
+    # print(embedded_t.draw(format="unicode", node_labels=node_labels))
+
+    stack = [len(mutations) - 1]
+    while len(stack) > 0:
+        j = stack.pop()
+        children = []
+        k = mutation_tree[j].child
+        while k != -1:
+            children.append(k)
+            k = mutation_tree[k].sib
+        assert sorted(children) == sorted(embedded_t.children(j))
+        # print("NODE ", j, children, embedded_t.children(j))
+        stack.extend(children)
+
 
     A = [set() for _ in mutation_tree]
     for j in embedded_t.nodes(order="postorder"):
@@ -185,14 +220,14 @@ def fitch_sets_from_mutations_by_embedding(tree, mutations):
             if len(A[j]) == 0:
                 A[j] = set.union(*[A[k] for k in embedded_t.children(j)])
         else:
-            print("LEAF", mutation_tree[j])
+            # print("LEAF", mutation_tree[j])
             k = j
             while u not in mutations:
                 k = embedded_t.parent(k)
                 u = mutation_tree[k].tree_node
             A[j] = {mutations[u]}
-            print("resolved to ", A[j])
-    print(A)
+            # print("resolved to ", A[j])
+    # print(A)
     A2 = [None for _ in range(tree.tree_sequence.num_nodes)]
     for j, mtb in enumerate(mutation_tree):
         if mtb.tree_node != -1:
@@ -461,13 +496,13 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     A2 = fitch_sets_from_mutations(tree, f1)
     A3 = fitch_sets_from_mutations_by_embedding(tree, f1)
 
-    print("====================")
-    print("A = ", A1)
-    print("A = ", A3)
-    node_labels = {u: str(A1[u]) for u in tree.nodes()}
-    print(tree.draw(format="unicode", node_labels=node_labels))
-    node_labels = {u: str(A3[u]) for u in tree.nodes()}
-    print(tree.draw(format="unicode", node_labels=node_labels))
+    # print("====================")
+    # print("A = ", A1)
+    # print("A = ", A3)
+    # node_labels = {u: str(A1[u]) for u in tree.nodes()}
+    # print(tree.draw(format="unicode", node_labels=node_labels))
+    # node_labels = {u: str(A3[u]) for u in tree.nodes()}
+    # print(tree.draw(format="unicode", node_labels=node_labels))
     # for f in [f1, f2, f3]:
     #     node_labels = {u: f"{u}  " for u in tree.nodes()}
     #     node_labels.update({u: f"{u}:{state}" for u, state in f.items()})
@@ -484,8 +519,8 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
 
 
 def incremental_fitch_dev():
-    ts = msprime.simulate(17, recombination_rate=0, random_seed=2)
-    dynamic_fitch_single_tree(ts.first(), num_mutations=3, num_labels=3, seed=3)
+    # ts = msprime.simulate(10**6, recombination_rate=0, random_seed=2)
+    # dynamic_fitch_single_tree(ts.first(), num_mutations=100, num_labels=5, seed=3)
     for n in range(3, 100):
         ts = msprime.simulate(n, recombination_rate=0, random_seed=2)
         for num_mutations in range(min(50, n)):
