@@ -75,6 +75,109 @@ def fitch_sets_from_mutations(tree, mutations):
                 v = tree.parent(v)
     return A
 
+def incremental_fitch_sets_from_mutations(tree, mutations):
+    """
+    Given a tree and a set of mutations on the tree, return the corresponding
+    Fitch sets for all nodes that are ancestral to mutations. This is done
+    in incremental manner using just the parent pointer in the tree.
+    """
+    ts = tree.tree_sequence
+    values = np.unique(mutations.values())
+    K = values.shape[0]
+    A = np.zeros((ts.num_nodes, K), dtype=int)
+    U = np.zeros((ts.num_nodes, K), dtype=int)
+
+
+    # INCOMPLETE
+
+    def compute(u, parent_state):
+        child_sets = []
+        for v in tree.children(u):
+            # If the set for a given child is empty, then we know it inherits
+            # directly from the parent state and must be a singleton set.
+            if len(A[v]) == 0:
+                child_sets.append({parent_state})
+            else:
+                child_sets.append(A[v])
+        A[u] = set.intersection(*child_sets)
+        if len(A[u]) == 0:
+            A[u] = set.union(*child_sets)
+
+
+
+    for u in sorted(mutations.keys(), key=lambda u: tree.time(u)):
+        state = np.searchsorted(values, mutations[u])
+        # Compute the value at this node
+        if tree.is_internal(u):
+            compute(u, mutations[u])
+        else:
+            A[u, state] = 1
+        # Find parent state
+        v = tree.parent(u)
+        if v != -1:
+            while v not in mutations:
+                v = tree.parent(v)
+            parent_state = np.searchsorted(values, mutations[v])
+            v = tree.parent(u)
+            while v not in mutations:
+                compute(v, parent_state)
+                v = tree.parent(v)
+
+
+
+#     parent = np.zeros(ts.num_nodes, dtype=int) - 1
+#     K = np.max(labels) + 1
+#     A = np.zeros((ts.num_nodes, K), dtype=int)
+#     U = np.zeros((ts.num_nodes, K), dtype=int)
+#     N = np.zeros(ts.num_nodes, dtype=int)
+
+#     for label, sample in zip(labels, ts.samples()):
+#         A[sample, label] = 1
+
+#     # We'd like to remove the A array entirely, but we need the old values of A
+#     # when we're propagating upwards and the dependencies are tricky. Possibly
+#     # this can be done if we propagate losses up first for all edges, but it's
+#     # not trivial.
+#     def a(u):
+#         a = U[u] == N[u]
+#         if np.sum(a) == 0 or N[u] == 0:
+#             a = U[u] > 0
+#         return a.astype(int)
+
+#     def propagate_loss(node):
+#         v = node
+#         u = parent[v]
+#         while u != -1:
+#             U[u] -= A[v]
+#             v = u
+#             u = parent[u]
+
+#     def propagate_gain(node):
+#         v = node
+#         u = parent[v]
+#         while u != -1:
+#             U[u] += A[v]
+#             A[u] = a(u)
+#             v = u
+#             u = parent[u]
+
+#     for (left, right), edges_out, edges_in in ts.edge_diffs():
+#         for edge in edges_out:
+#             propagate_loss(edge.child)
+#             parent[edge.child] = -1
+#             N[edge.parent] -= 1
+#             A[edge.parent] = a(edge.parent)
+#             propagate_gain(edge.parent)
+
+#         for edge in edges_in:
+#             parent[edge.child] = edge.parent
+#             N[edge.parent] += 1
+#             propagate_loss(edge.parent)
+#             propagate_gain(edge.child)
+
+#         yield A
+
+
 
 @attr.s
 class MutationTreeNode(object):
@@ -536,8 +639,10 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     g3 = project_genotypes(tree, f3)
     A1 = fitch_sets(tree, g2)
     A2 = fitch_sets_from_mutations(tree, f1)
-    A3, f4 = fitch_sets_from_mutations_by_embedding(tree, f1)
-    g4 = project_genotypes(tree, f4)
+    A3 = incremental_fitch_sets_from_mutations(tree, f1)
+
+    # A3, f4 = fitch_sets_from_mutations_by_embedding(tree, f1)
+    # g4 = project_genotypes(tree, f4)
 
     # print("====================")
     # print("A = ", A1)
@@ -556,11 +661,9 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     # print(len(f1), len(f2), len(f3))
 
     for u in f1:
-        assert A1[u] == A3[u]
+        assert A1[u] == A2[u]
     assert len(f2) == len(f3)
-    assert len(f4) == len(f3)
     assert np.array_equal(g2, g3)
-    assert np.array_equal(g3, g4)
 
 
 def incremental_fitch_dev():
