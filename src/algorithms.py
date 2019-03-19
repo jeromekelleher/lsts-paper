@@ -1678,10 +1678,24 @@ class OldForwardAlgorithm(object):
                         A[u] = set.union(*child_sets)
                     u = tree.parent(u)
 
+        print({u: f[u] for u in M})
         A2 = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+        print("HERE")
+        print(tree.draw(format="unicode", node_labels={u: str(u) + str(A[u]) + "  " for u in tree.nodes()}))
+        print(tree.draw(format="unicode", node_labels={u: str(A2[u]) + " " for u in tree.nodes()}))
         # print(A)
         # print(A2)
-        # assert A == A2
+        # FIXME There's something very strange happening here. It looks like the version
+        # of the algorithm we have in here for computing A is incorrect, as it disagrees
+        # with the fitch_sets_from_mutations implementation, and it does appear to be
+        # including values in the Fitch set at mutation nodes that shouldn't be included.
+        # That is, we're assuming that the mutation value is always in the Fitch set,
+        # which isn't true. The weird thing is though, when we substitute in the correct
+        # Fitch sets, we get the wrong value out at the end of the algorithm! So, there
+        # must be some error in the mutation mapping phase below which is being caught
+        # out by this.
+        assert A == A2
+        # A = A2
         f_dict = get_parsimonious_mutations(tree, {u: f[u] for u in M})
 
         f_copy = f.copy()
@@ -2448,8 +2462,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    verify()
-    # develop()
+    # verify()
+    develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
