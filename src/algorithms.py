@@ -1653,19 +1653,24 @@ class ForwardAlgorithm(object):
         values = np.unique(list(f[u] for u in M))
 
         def compute(u, parent_state):
-            child_sets = []
+            union = np.zeros(len(values), dtype=int)
+            inter = np.ones(len(values), dtype=int)
+            child = np.zeros(len(values), dtype=int)
             for v in tree.children(u):
+                child[:] = A[v]
                 # If the set for a given child is empty, then we know it inherits
                 # directly from the parent state and must be a singleton set.
-                if len(A[v]) == 0:
-                    child_sets.append({parent_state})
-                else:
-                    child_sets.append(A[v])
-            A[u] = set.intersection(*child_sets)
-            if len(A[u]) == 0:
-                A[u] = set.union(*child_sets)
+                if np.sum(child) == 0:
+                    child[parent_state] = 1
+                union = np.logical_or(union, child)
+                inter = np.logical_and(inter, child)
+            if np.sum(inter) > 0:
+                A[u] = inter
+            else:
+                A[u] = union
 
-        A = [set() for _ in range(tree.tree_sequence.num_nodes)]
+        A = np.zeros((tree.tree_sequence.num_nodes, len(values)), dtype=int)
+
         M.sort(key=lambda u: tree.time(u))
         for u in M:
             # Compute the value at this node
@@ -1673,7 +1678,7 @@ class ForwardAlgorithm(object):
             if tree.is_internal(u):
                 compute(u, state)
             else:
-                A[u] = {state}
+                A[u, state] = 1
             # Find parent state
             v = tree.parent(u)
             if v != -1:
@@ -1685,28 +1690,32 @@ class ForwardAlgorithm(object):
                     compute(v, parent_state)
                     v = tree.parent(v)
 
-        A2 = [{values[j] for j in node_set} for node_set in A]
-        assert A2 == fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+        A2 = [{values[j] for j in np.where(row == 1)[0]} for row in A]
+        A3 = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+        # print(tree.draw(format="unicode"))
+        # for u, (r0, r1, r2) in enumerate(zip(A, A2, A3)):
+        #     print(u, r0, r1, r2, sep="\t")
+        assert A2 == A3
 
         f_copy = f.copy()
         f[M] = -1
         M.clear()
         old_state = np.searchsorted(values, f_copy[tree.root])
-        new_state = list(A[tree.root])[0]
+        new_state = np.where(A[tree.root] == 1)[0][0]
         f[tree.root] = values[new_state]
         M.append(tree.root)
         stack = [(tree.root, old_state, new_state)]
         while len(stack) > 0:
             u, old_state, new_state = stack.pop()
-            # print("VISIT", u, old_state, new_state)
             for v in tree.children(u):
                 old_child_state = old_state
                 if f_copy[v] != -1:
                     old_child_state = np.searchsorted(values, f_copy[v])
-                if len(A[v]) > 0:
+                if np.sum(A[v]) > 0:
                     new_child_state = new_state
-                    if new_state not in A[v]:
-                        new_child_state = list(A[v])[0]
+                    if A[v, new_state] == 0:
+                        new_child_state = np.where(A[v] == 1)[0][0]
+                        # new_child_state = list(A[v])[0]
                         f[v] = values[new_child_state]
                         M.append(v)
                     stack.append((v, old_child_state, new_child_state))
@@ -2494,8 +2503,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    verify()
-    # develop()
+    # verify()
+    develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
