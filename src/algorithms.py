@@ -1646,7 +1646,7 @@ class OldForwardAlgorithm(object):
             node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
         return tree.draw(format="unicode", node_labels=node_labels)
 
-    def compress(self, tree):
+    def simple_compress(self, tree):
         self.check_integrity()
         f_dict = get_parsimonious_mutations(tree, {u: self.f[u] for u in self.M})
         self.f[self.M] = -1
@@ -1664,6 +1664,84 @@ class OldForwardAlgorithm(object):
                 v = tree.parent(v)
             if v != tskit.NULL:
                 self.N[v] -= self.N[u]
+
+    def compress(self, tree):
+        self.check_integrity()
+        M = self.M
+        f = self.f
+
+        def compute(u, parent_state):
+            child_sets = []
+            for v in tree.children(u):
+                # If the set for a given child is empty, then we know it inherits
+                # directly from the parent state and must be a singleton set.
+                if len(A[v]) == 0:
+                    child_sets.append({parent_state})
+                else:
+                    child_sets.append(A[v])
+            A[u] = set.intersection(*child_sets)
+            if len(A[u]) == 0:
+                A[u] = set.union(*child_sets)
+
+        A = [set() for _ in range(tree.tree_sequence.num_nodes)]
+        M.sort(key=lambda u: tree.time(u))
+        for u in M:
+            # Compute the value at this node
+            if tree.is_internal(u):
+                compute(u, f[u])
+            else:
+                A[u] = {f[u]}
+            # Find parent state
+            v = tree.parent(u)
+            if v != -1:
+                while f[v] == -1:
+                    v = tree.parent(v)
+                parent_state = f[v]
+                v = tree.parent(u)
+                while f[v] == -1:
+                    compute(v, parent_state)
+                    v = tree.parent(v)
+
+        assert A == fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+
+        f_copy = f.copy()
+        f[M] = -1
+        M.clear()
+        old_state = f_copy[tree.root]
+        new_state = list(A[tree.root])[0]
+        f[tree.root] = new_state
+        M.append(tree.root)
+        stack = [(tree.root, old_state, new_state)]
+        while len(stack) > 0:
+            u, old_state, new_state = stack.pop()
+            # print("VISIT", u, old_state, new_state)
+            for v in tree.children(u):
+                old_child_state = old_state
+                if f_copy[v] != -1:
+                    old_child_state = f_copy[v]
+                if len(A[v]) > 0:
+                    new_child_state = new_state
+                    if new_state not in A[v]:
+                        new_child_state = list(A[v])[0]
+                        f[v] = new_child_state
+                        M.append(v)
+                    stack.append((v, old_child_state, new_child_state))
+                else:
+                    if old_child_state != new_state:
+                        f[v] = old_child_state
+                        M.append(v)
+
+        self.N[:] = 0
+        for u in self.M:
+            self.N[u] = tree.num_samples(u)
+        for u in self.M:
+            v = tree.parent(u)
+            while v != tskit.NULL and self.f[v] == -1:
+                v = tree.parent(v)
+            if v != tskit.NULL:
+                self.N[v] -= self.N[u]
+
+        self.check_integrity()
 
     def run(self, h, alleles):
         n = self.ts.num_samples
