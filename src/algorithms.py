@@ -1228,8 +1228,8 @@ def ls_forward_tree(h, alleles, ts, mu, rho, precision=10):
     """
     Forward matrix computation based on a tree sequence.
     """
-    # fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
-    fa = OldForwardAlgorithm(ts, rho, mu, precision=precision)
+    fa = ForwardAlgorithm(ts, rho, mu, precision=precision)
+    # fa = OldForwardAlgorithm(ts, rho, mu, precision=precision)
     # fa = ForwardAlgorithmMutationTree(ts, rho, mu, precision=precision)
     return fa.run(h, alleles)
 
@@ -1611,6 +1611,232 @@ class ForwardAlgorithmMutationTree(object):
         return self.F, self.S
 
 
+class ForwardAlgorithm(object):
+    """
+    Runs the Li and Stephens forward algorithm.
+    """
+    def __init__(self, ts, mu, rho, precision=10):
+        self.ts = ts
+        self.mu = mu
+        self.rho = rho
+        self.precision = precision
+        n, m = ts.num_samples, ts.num_sites
+        # The output F matrix. Each site is a dictionary containing a compressed
+        # probability array.
+        self.F = [None for _ in range(m)]
+        # The output normalisation array.
+        self.S = np.zeros(m)
+        # The probablilites associated with each mutation.
+        self.f = np.zeros(ts.num_nodes) - 1
+        # List of nodes containing mutations.
+        self.M = []
+        # Number of samples directly inheriting from each mutation
+        self.N = np.zeros(ts.num_nodes, dtype=int)
+        self.parent = np.zeros(ts.num_nodes, dtype=int) - 1
+
+    def check_integrity(self):
+        assert np.all(self.f[self.M] >= 0)
+        index = np.ones_like(self.f, dtype=bool)
+        index[self.M] = 0
+        assert np.all(self.f[index] == -1)
+
+    def draw_tree(self, tree):
+        node_labels = {u: f"{u}  " for u in tree.nodes()}
+        for u in self.M:
+            node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
+        return tree.draw(format="unicode", node_labels=node_labels)
+
+    def compress(self, tree):
+        self.check_integrity()
+        M = self.M
+        f = self.f
+        values = np.unique(list(f[u] for u in M))
+
+        def compute(u, parent_state):
+            child_sets = []
+            for v in tree.children(u):
+                # If the set for a given child is empty, then we know it inherits
+                # directly from the parent state and must be a singleton set.
+                if len(A[v]) == 0:
+                    child_sets.append({parent_state})
+                else:
+                    child_sets.append(A[v])
+            A[u] = set.intersection(*child_sets)
+            if len(A[u]) == 0:
+                A[u] = set.union(*child_sets)
+
+        A = [set() for _ in range(tree.tree_sequence.num_nodes)]
+        M.sort(key=lambda u: tree.time(u))
+        for u in M:
+            # Compute the value at this node
+            state = np.searchsorted(values, f[u])
+            if tree.is_internal(u):
+                compute(u, state)
+            else:
+                A[u] = {state}
+            # Find parent state
+            v = tree.parent(u)
+            if v != -1:
+                while f[v] == -1:
+                    v = tree.parent(v)
+                parent_state = np.searchsorted(values, f[v])
+                v = tree.parent(u)
+                while f[v] == -1:
+                    compute(v, parent_state)
+                    v = tree.parent(v)
+
+        A2 = [{values[j] for j in node_set} for node_set in A]
+        assert A2 == fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+
+        f_copy = f.copy()
+        f[M] = -1
+        M.clear()
+        old_state = np.searchsorted(values, f_copy[tree.root])
+        new_state = list(A[tree.root])[0]
+        f[tree.root] = values[new_state]
+        M.append(tree.root)
+        stack = [(tree.root, old_state, new_state)]
+        while len(stack) > 0:
+            u, old_state, new_state = stack.pop()
+            # print("VISIT", u, old_state, new_state)
+            for v in tree.children(u):
+                old_child_state = old_state
+                if f_copy[v] != -1:
+                    old_child_state = np.searchsorted(values, f_copy[v])
+                if len(A[v]) > 0:
+                    new_child_state = new_state
+                    if new_state not in A[v]:
+                        new_child_state = list(A[v])[0]
+                        f[v] = values[new_child_state]
+                        M.append(v)
+                    stack.append((v, old_child_state, new_child_state))
+                else:
+                    if old_child_state != new_state:
+                        f[v] = values[old_child_state]
+                        M.append(v)
+
+        self.N[:] = 0
+        for u in self.M:
+            self.N[u] = tree.num_samples(u)
+        for u in self.M:
+            v = tree.parent(u)
+            while v != tskit.NULL and self.f[v] == -1:
+                v = tree.parent(v)
+            if v != tskit.NULL:
+                self.N[v] -= self.N[u]
+
+        self.check_integrity()
+
+    def run(self, h, alleles):
+        n = self.ts.num_samples
+        f = self.f
+        S = self.S
+        M = self.M
+        N = self.N
+        parent = self.parent
+
+        for u in self.ts.samples():
+            f[u] = 1 / n
+            M.append(u)
+
+        tree = tskit.Tree(self.ts)
+        for (left, right), edges_out, edges_in in self.ts.edge_diffs():
+            # print("start", left, right, M)
+            self.check_integrity()
+            g1 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
+
+            before = self.draw_tree(tree)
+            for edge in edges_out:
+                # print("REMOVE", edge)
+                u = edge.child
+                if f[u] == -1:
+                    # Make sure the subtree we're detaching has an f-value at the root.
+                    while f[u] == -1:
+                        u = parent[u]
+                    f[edge.child] = f[u]
+                    M.append(edge.child)
+                parent[edge.child] = -1
+            self.check_integrity()
+
+            for edge in edges_in:
+                # print("INSERT", edge)
+                parent[edge.child] = edge.parent
+
+                if parent[edge.parent] == -1:
+                    # Grafting onto a new root.
+                    if f[edge.parent] == -1:
+                        f[edge.parent] = f[edge.child]
+                        M.append(edge.parent)
+                    if f[edge.parent] == f[edge.child]:
+                        f[edge.child] = -1
+                        M.remove(edge.child)
+                else:
+                    # Grafting into an existing subtree.
+                    u = edge.parent
+                    while f[u] == -1:
+                        u = parent[u]
+                    assert u != -1
+                    if f[u] == f[edge.child]:
+                        f[edge.child] = -1
+                        M.remove(edge.child)
+
+            self.check_integrity()
+
+            tree.next()
+            g2 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
+            # print("NEW TREE")
+            # after = self.draw_tree(tree)
+            # for l1, l2 in zip(before.splitlines(), after.splitlines()):
+            #     print(l1, "|", l2)
+            # print(g1)
+            # print(g2)
+            assert np.all(g1 == g2)
+
+            for site in tree.sites():
+                l = site.id
+                # print("l = ", l, h[l], site.mutations)
+                # print("M = ", M)
+                # print("f = ", {u: f[u] for u in M})
+                assert np.all(f[M] >= 0)
+                for mutation in site.mutations:
+                    u = mutation.node
+                    while u != tskit.NULL and f[u] == tskit.NULL:
+                        u = tree.parent(u)
+                    if f[mutation.node] == -1:
+                        M.append(mutation.node)
+                    f[mutation.node] = 0 if u == tskit.NULL else f[u]
+
+                mutations = {mut.node: mut.derived_state for mut in site.mutations}
+                for u in M:
+                    assert f[u] >= 0
+                    # Get the state at u. TODO we can add a state_cache here.
+                    v = u
+                    while v != tskit.NULL and v not in mutations:
+                        v = tree.parent(v)
+                    allele = mutations.get(v, site.ancestral_state)
+                    state = alleles[site.id].index(allele)
+
+                    # Compute the F value for u.
+                    p_t = f[u] * (1 - self.rho[l]) + self.rho[l] / n
+                    p_e = self.mu[l]
+                    if h[l] == state:
+                        p_e = 1 - (len(alleles[l]) - 1) * self.mu[l]
+                    f[u] = round(p_t * p_e, self.precision)
+                    assert f[u] >= 0
+
+                self.compress(tree)
+                # Normalise and store
+                self.S[l] = sum(N[u] * f[u] for u in M)
+                for u in M:
+                    f[u] /= self.S[l]
+                # print("f = ", f)
+                self.F[l] = {u: f[u] for u in M}
+
+        return self.F, self.S
+
+
+
+
 class OldForwardAlgorithm(object):
     """
     Runs the Li and Stephens forward algorithm.
@@ -1820,221 +2046,6 @@ class OldForwardAlgorithm(object):
                         u = tree.parent(u)
                     if f[mutation.node] == -1:
                         M.append(mutation.node)
-                    f[mutation.node] = 0 if u == tskit.NULL else f[u]
-
-                mutations = {mut.node: mut.derived_state for mut in site.mutations}
-                for u in M:
-                    assert f[u] >= 0
-                    # Get the state at u. TODO we can add a state_cache here.
-                    v = u
-                    while v != tskit.NULL and v not in mutations:
-                        v = tree.parent(v)
-                    allele = mutations.get(v, site.ancestral_state)
-                    state = alleles[site.id].index(allele)
-
-                    # Compute the F value for u.
-                    p_t = f[u] * (1 - self.rho[l]) + self.rho[l] / n
-                    p_e = self.mu[l]
-                    if h[l] == state:
-                        p_e = 1 - (len(alleles[l]) - 1) * self.mu[l]
-                    f[u] = round(p_t * p_e, self.precision)
-                    assert f[u] >= 0
-
-                self.compress(tree)
-                # Normalise and store
-                self.S[l] = sum(N[u] * f[u] for u in M)
-                for u in M:
-                    f[u] /= self.S[l]
-                # print("f = ", f)
-                self.F[l] = {u: f[u] for u in M}
-
-        return self.F, self.S
-
-
-
-class ForwardAlgorithm(object):
-    """
-    Runs the Li and Stephens forward algorithm.
-    """
-    def __init__(self, ts, mu, rho, precision=10):
-        self.ts = ts
-        self.mu = mu
-        self.rho = rho
-        self.precision = precision
-        n, m = ts.num_samples, ts.num_sites
-        # The output F matrix. Each site is a dictionary containing a compressed
-        # probability array.
-        self.F = [None for _ in range(m)]
-        # The output normalisation array.
-        self.S = np.zeros(m)
-        # The probablilites associated with each mutation.
-        self.f = np.zeros(ts.num_nodes) - 1
-        # List of nodes containing mutations.
-        self.M = []
-        # Number of samples directly inheriting from each mutation
-        self.N = np.zeros(ts.num_nodes, dtype=int)
-
-    def check_integrity(self):
-        assert np.all(self.f[self.M] >= 0)
-        index = np.ones_like(self.f, dtype=bool)
-        index[self.M] = 0
-        assert np.all(self.f[index] == -1)
-
-    def draw_tree(self, tree):
-        node_labels = {u: f"{u}  " for u in tree.nodes()}
-        for u in self.M:
-            node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
-        return tree.draw(format="unicode", node_labels=node_labels)
-
-
-    def compress(self, tree):
-        self.check_integrity()
-        M = self.M
-        f = self.f
-        N = self.N
-
-        A = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
-        f_dict = get_parsimonious_mutations(tree, {u: f[u] for u in M})
-        f[:] = -1
-        M.clear()
-        for u, value in f_dict.items():
-            f[u] = value
-            M.append(u)
-
-        # # f_dict2 = get_parsimonious_mutations_by_projection(
-        # #     tree, {u: searchsorted(values, f[u]) for u in M})
-
-        # f_copy = f.copy()
-        # f[:] = -1
-        # M.clear()
-
-        # old_state = f_copy[tree.root]
-        # new_state = list(A[tree.root])[0]
-        # f[tree.root] = new_state
-        # M.append(tree.root)
-        # mutation_parents = [-1]
-        # stack = [(tree.root, old_state, new_state, 0)]
-        # while len(stack) > 0:
-        #     u, old_state, new_state, mutation_parent = stack.pop()
-        #     # print("VISIT", u, values[old_state], values[new_state], mutation_parent)
-        #     for v in tree.children(u):
-        #         old_child_state = old_state
-        #         if f_copy[v] != -1:
-        #             # old_child_state =  np.searchsorted(values, f_copy[v])
-        #             # assert values[old_child_state] == f_copy[v]
-        #             old_child_state = f_copy[v]
-        #         if len(A[v]) > 0:
-        #             new_child_state = new_state
-
-        #             child_mutation_parent = mutation_parent
-        #             if new_state not in A[v]:
-        #                 new_child_state = list(A[v])[0]
-        #                 # f[v] = values[new_child_state]
-        #                 f[v] = new_child_state
-        #                 assert f[v] <= 1
-        #                 M.append(v)
-        #                 child_mutation_parent = len(mutation_parents)
-        #                 mutation_parents.append(mutation_parent)
-        #             stack.append((v, old_child_state, new_child_state, child_mutation_parent))
-        #         else:
-        #             if old_child_state != new_state:
-        #                 # f[v] = values[old_child_state]
-        #                 f[v] = old_child_state
-        #                 assert f[v] <= 1
-        #                 M.append(v)
-        #                 mutation_parents.append(mutation_parent)
-
-        #             # print("SKIP", v, old_child_state, new_state)
-        # f_dict3 = {u: f[u] for u in M}
-        # print("f_map = ", f_dict3)
-        # assert np.all(f <= 1.0)
-
-        # # print(f)
-        # # print(f_dict)
-        # # print({u: np.searchsorted(values, f[u]) for u in M})
-        # # print(f_dict2)
-        # # print("lens = ", len(M), len(f_dict), len(f_dict2))
-        # # print(self.draw_tree(tree))
-        # assert len(f_dict) == len(f_dict3)
-        # assert np.all(f[M] >= 0)
-
-        # for u, mutation_parent in zip(M, mutation_parents):
-        #     N[u] = tree.num_samples(u)
-        #     if mutation_parent != -1:
-        #         N[M[mutation_parent]] -= N[u]
-
-
-
-        N[:] = 0
-        for u in M:
-            N[u] = tree.num_samples(u)
-        # N = {u: tree.num_samples(u) for u in f}
-        for u in sorted(M, key=lambda u: -tree.time(u)):
-            v = tree.parent(u)
-            while v != tskit.NULL and v not in f:
-                v = tree.parent(v)
-            if v != tskit.NULL:
-                N[v] -= N[u]
-
-
-        self.check_integrity()
-
-
-    def run(self, h, alleles):
-        n = self.ts.num_samples
-        f = self.f
-        S = self.S
-        M = self.M
-        N = self.N
-
-        for u in self.ts.samples():
-            f[u] = 1 / n
-            M.append(u)
-
-        tree = tskit.Tree(self.ts)
-        for (left, right), edges_out, edges_in in self.ts.edge_diffs():
-            # print("start", left, right, M)
-            self.check_integrity()
-            # before = draw_tree(tree, f)
-            for edge in edges_out:
-                u = edge.child
-                if f[u] == -1:
-                    while f[u] == -1:
-                        u = tree.parent(u)
-                    f[edge.child] = f[u]
-                    M.append(edge.child)
-            self.check_integrity()
-
-            for edge in edges_in:
-                if f[edge.parent] == -1:
-                    f[edge.parent] = f[edge.child]
-                    M.append(edge.parent)
-                if f[edge.parent] == f[edge.child]:
-                    f[edge.child] = -1
-                    M.remove(edge.child)
-            self.check_integrity()
-
-            tree.next()
-            # print("NEW TREE")
-            # after = draw_tree(tree, f)
-            # for l1, l2 in zip(before.splitlines(), after.splitlines()):
-            #     print(l1, "|", l2)
-
-            for site in tree.sites():
-                l = site.id
-                self.check_integrity()
-                # print("l = ", l, h[l], site.mutations)
-                # print("M = ", M)
-                # print("f = ", {u: f[u] for u in M})
-
-                assert np.all(f[M] >= 0)
-                for mutation in site.mutations:
-                    u = mutation.node
-                    while u != tskit.NULL and f[u] == tskit.NULL:
-                        u = tree.parent(u)
-                    if f[mutation.node] == -1:
-                        M.append(mutation.node)
-                    assert u != tskit.NULL
                     f[mutation.node] = 0 if u == tskit.NULL else f[u]
 
                 mutations = {mut.node: mut.derived_state for mut in site.mutations}
@@ -2421,8 +2432,8 @@ def develop():
     Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
     Ft = decode_ts_matrix(ts, Ft)
 
-    print(S)
-    print(St)
+    # print(S)
+    # print(St)
     assert np.allclose(S, St)
     assert np.allclose(F, Ft)
 
