@@ -1632,7 +1632,6 @@ class ForwardAlgorithm(object):
         self.M = []
         # Number of samples directly inheriting from each mutation
         self.N = np.zeros(ts.num_nodes, dtype=int)
-        self.parent = np.zeros(ts.num_nodes, dtype=int) - 1
 
     def check_integrity(self):
         assert np.all(self.f[self.M] >= 0)
@@ -1715,7 +1714,6 @@ class ForwardAlgorithm(object):
                     new_child_state = new_state
                     if A[v, new_state] == 0:
                         new_child_state = np.where(A[v] == 1)[0][0]
-                        # new_child_state = list(A[v])[0]
                         f[v] = values[new_child_state]
                         M.append(v)
                     stack.append((v, old_child_state, new_child_state))
@@ -1742,7 +1740,9 @@ class ForwardAlgorithm(object):
         S = self.S
         M = self.M
         N = self.N
-        parent = self.parent
+
+        parent = np.zeros(self.ts.num_nodes, dtype=int) - 1
+        state = np.zeros(self.ts.num_nodes, dtype=int) - 1
 
         for u in self.ts.samples():
             f[u] = 1 / n
@@ -1807,38 +1807,44 @@ class ForwardAlgorithm(object):
                 # print("M = ", M)
                 # print("f = ", {u: f[u] for u in M})
                 assert np.all(f[M] >= 0)
+                # Set the state for this site.
+                state[tree.root] = alleles[l].index(site.ancestral_state)
                 for mutation in site.mutations:
                     u = mutation.node
+                    state[u] = alleles[l].index(mutation.derived_state)
                     while u != tskit.NULL and f[u] == tskit.NULL:
                         u = tree.parent(u)
                     if f[mutation.node] == -1:
                         M.append(mutation.node)
-                    f[mutation.node] = 0 if u == tskit.NULL else f[u]
+                    assert u != tskit.NULL
+                    f[mutation.node] = f[u]
 
-                mutations = {mut.node: mut.derived_state for mut in site.mutations}
                 for u in M:
                     assert f[u] >= 0
-                    # Get the state at u. TODO we can add a state_cache here.
+                    # Get the state at u. TODO we can cache these states to
+                    # avoid some upward traversals.
                     v = u
-                    while v != tskit.NULL and v not in mutations:
+                    while v != tskit.NULL and state[v] == -1:
                         v = tree.parent(v)
-                    allele = mutations.get(v, site.ancestral_state)
-                    state = alleles[site.id].index(allele)
-
                     # Compute the F value for u.
                     p_t = f[u] * (1 - self.rho[l]) + self.rho[l] / n
                     p_e = self.mu[l]
-                    if h[l] == state:
+                    if h[l] == state[v]:
                         p_e = 1 - (len(alleles[l]) - 1) * self.mu[l]
                     f[u] = round(p_t * p_e, self.precision)
                     assert f[u] >= 0
 
+                # Unset the states
+                state[tree.root] = -1
+                for mutation in site.mutations:
+                    state[mutation.node] = -1
+
                 self.compress(tree)
+
                 # Normalise and store
                 self.S[l] = sum(N[u] * f[u] for u in M)
                 for u in M:
                     f[u] /= self.S[l]
-                # print("f = ", f)
                 self.F[l] = {u: f[u] for u in M}
 
         return self.F, self.S
@@ -2503,8 +2509,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    # verify()
-    develop()
+    verify()
+    # develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
