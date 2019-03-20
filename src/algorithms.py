@@ -1611,6 +1611,14 @@ class ForwardAlgorithmMutationTree(object):
         return self.F, self.S
 
 
+@attr.s
+class StateTransition(object):
+    tree_node = attr.ib(default=-1)
+    index = attr.ib(default=-1)
+    parent = attr.ib(default=-1)
+    num_samples = attr.ib(default=-1)
+
+
 class ForwardAlgorithm(object):
     """
     Runs the Li and Stephens forward algorithm.
@@ -1628,28 +1636,28 @@ class ForwardAlgorithm(object):
         self.S = np.zeros(m)
         # The probablilites associated with each mutation.
         self.f = np.zeros(ts.num_nodes) - 1
-        # List of nodes containing mutations.
-        self.M = []
-        # Number of samples directly inheriting from each mutation
-        self.N = np.zeros(ts.num_nodes, dtype=int)
+
+        self.T = []
 
     def check_integrity(self):
-        assert np.all(self.f[self.M] >= 0)
+        M = [st.tree_node for st in self.T]
+        assert np.all(self.f[M] >= 0)
         index = np.ones_like(self.f, dtype=bool)
-        index[self.M] = 0
+        index[M] = 0
         assert np.all(self.f[index] == -1)
 
     def draw_tree(self, tree):
         node_labels = {u: f"{u}  " for u in tree.nodes()}
-        for u in self.M:
+        for st in self.T:
+            u = st.tree_node
             node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
         return tree.draw(format="unicode", node_labels=node_labels)
 
     def compress(self, tree):
         self.check_integrity()
-        M = self.M
+        T = self.T
         f = self.f
-        values = np.unique(list(f[u] for u in M))
+        values = np.unique(list(f[st.tree_node] for st in T))
 
         def compute(u, parent_state):
             union = np.zeros(len(values), dtype=int)
@@ -1670,9 +1678,10 @@ class ForwardAlgorithm(object):
 
         A = np.zeros((tree.tree_sequence.num_nodes, len(values)), dtype=int)
 
-        M.sort(key=lambda u: tree.time(u))
-        for u in M:
+        T.sort(key=lambda st: tree.time(st.tree_node))
+        for st in T:
             # Compute the value at this node
+            u = st.tree_node
             state = np.searchsorted(values, f[u])
             if tree.is_internal(u):
                 compute(u, state)
@@ -1690,47 +1699,47 @@ class ForwardAlgorithm(object):
                     v = tree.parent(v)
 
         A2 = [{values[j] for j in np.where(row == 1)[0]} for row in A]
-        A3 = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
+        A3 = fitch_sets_from_mutations(tree, {st.tree_node: f[st.tree_node] for st in T})
         # print(tree.draw(format="unicode"))
         # for u, (r0, r1, r2) in enumerate(zip(A, A2, A3)):
         #     print(u, r0, r1, r2, sep="\t")
         assert A2 == A3
 
         f_copy = f.copy()
-        f[M] = -1
-        M.clear()
+        for st in T:
+            f[st.tree_node] = -1
+        T.clear()
+
         old_state = np.searchsorted(values, f_copy[tree.root])
         new_state = np.where(A[tree.root] == 1)[0][0]
         f[tree.root] = values[new_state]
-        M.append(tree.root)
-        stack = [(tree.root, old_state, new_state)]
+        T.append(StateTransition(tree_node=tree.root))
+        stack = [(tree.root, old_state, new_state, 0)]
         while len(stack) > 0:
-            u, old_state, new_state = stack.pop()
+            u, old_state, new_state, t_parent = stack.pop()
             for v in tree.children(u):
                 old_child_state = old_state
                 if f_copy[v] != -1:
                     old_child_state = np.searchsorted(values, f_copy[v])
                 if np.sum(A[v]) > 0:
                     new_child_state = new_state
+                    child_t_parent = t_parent
                     if A[v, new_state] == 0:
                         new_child_state = np.where(A[v] == 1)[0][0]
                         f[v] = values[new_child_state]
-                        M.append(v)
-                    stack.append((v, old_child_state, new_child_state))
+                        child_t_parent = len(T)
+                        T.append(StateTransition(tree_node=v, parent=t_parent))
+                    stack.append((v, old_child_state, new_child_state, child_t_parent))
                 else:
                     if old_child_state != new_state:
                         f[v] = values[old_child_state]
-                        M.append(v)
+                        T.append(StateTransition(tree_node=v, parent=t_parent))
 
-        self.N[:] = 0
-        for u in self.M:
-            self.N[u] = tree.num_samples(u)
-        for u in self.M:
-            v = tree.parent(u)
-            while v != tskit.NULL and self.f[v] == -1:
-                v = tree.parent(v)
-            if v != tskit.NULL:
-                self.N[v] -= self.N[u]
+        for st in T:
+            st.num_samples = tree.num_samples(st.tree_node)
+        for st in T:
+            if st.parent != -1:
+                T[st.parent].num_samples -= st.num_samples
 
         self.check_integrity()
 
@@ -1738,21 +1747,21 @@ class ForwardAlgorithm(object):
         n = self.ts.num_samples
         f = self.f
         S = self.S
-        M = self.M
-        N = self.N
+        T = self.T
 
         parent = np.zeros(self.ts.num_nodes, dtype=int) - 1
         state = np.zeros(self.ts.num_nodes, dtype=int) - 1
 
         for u in self.ts.samples():
             f[u] = 1 / n
-            M.append(u)
+            T.append(StateTransition(tree_node=u))
 
         tree = tskit.Tree(self.ts)
         for (left, right), edges_out, edges_in in self.ts.edge_diffs():
             # print("start", left, right, M)
             self.check_integrity()
-            g1 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
+            g1 = project_genotypes(
+                tree, {st.tree_node: f[st.tree_node] for st in T}, dtype=np.float64)
 
             before = self.draw_tree(tree)
             for edge in edges_out:
@@ -1763,7 +1772,7 @@ class ForwardAlgorithm(object):
                     while f[u] == -1:
                         u = parent[u]
                     f[edge.child] = f[u]
-                    M.append(edge.child)
+                    T.append(StateTransition(tree_node=edge.child))
                 parent[edge.child] = -1
             self.check_integrity()
 
@@ -1771,14 +1780,18 @@ class ForwardAlgorithm(object):
                 # print("INSERT", edge)
                 parent[edge.child] = edge.parent
 
+                u = -1
                 if parent[edge.parent] == -1:
                     # Grafting onto a new root.
                     if f[edge.parent] == -1:
                         f[edge.parent] = f[edge.child]
-                        M.append(edge.parent)
+                        T.append(StateTransition(tree_node=edge.parent))
+                    # TODO we can definitely save some code duplication here,
+                    # this condition and the one below are almost identical.
                     if f[edge.parent] == f[edge.child]:
                         f[edge.child] = -1
-                        M.remove(edge.child)
+                        index = [st.tree_node for st in T].index(edge.child)
+                        st = T.pop(index)
                 else:
                     # Grafting into an existing subtree.
                     u = edge.parent
@@ -1787,12 +1800,16 @@ class ForwardAlgorithm(object):
                     assert u != -1
                     if f[u] == f[edge.child]:
                         f[edge.child] = -1
-                        M.remove(edge.child)
+                        # T.remove(StateTransition(tree_node=edge.child))
+                        index = [st.tree_node for st in T].index(edge.child)
+                        st = T.pop(index)
 
             self.check_integrity()
 
             tree.next()
-            g2 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
+            g2 = project_genotypes(
+                tree, {st.tree_node: f[st.tree_node] for st in T}, dtype=np.float64)
+
             # print("NEW TREE")
             # after = self.draw_tree(tree)
             # for l1, l2 in zip(before.splitlines(), after.splitlines()):
@@ -1802,11 +1819,8 @@ class ForwardAlgorithm(object):
             assert np.all(g1 == g2)
 
             for site in tree.sites():
+                self.check_integrity()
                 l = site.id
-                # print("l = ", l, h[l], site.mutations)
-                # print("M = ", M)
-                # print("f = ", {u: f[u] for u in M})
-                assert np.all(f[M] >= 0)
                 # Set the state for this site.
                 state[tree.root] = alleles[l].index(site.ancestral_state)
                 for mutation in site.mutations:
@@ -1815,11 +1829,12 @@ class ForwardAlgorithm(object):
                     while u != tskit.NULL and f[u] == tskit.NULL:
                         u = tree.parent(u)
                     if f[mutation.node] == -1:
-                        M.append(mutation.node)
+                        T.append(StateTransition(tree_node=mutation.node))
                     assert u != tskit.NULL
                     f[mutation.node] = f[u]
 
-                for u in M:
+                for st in T:
+                    u = st.tree_node
                     assert f[u] >= 0
                     # Get the state at u. TODO we can cache these states to
                     # avoid some upward traversals.
@@ -1842,10 +1857,10 @@ class ForwardAlgorithm(object):
                 self.compress(tree)
 
                 # Normalise and store
-                self.S[l] = sum(N[u] * f[u] for u in M)
-                for u in M:
-                    f[u] /= self.S[l]
-                self.F[l] = {u: f[u] for u in M}
+                self.S[l] = sum(st.num_samples * f[st.tree_node] for st in T)
+                for st in T:
+                    f[st.tree_node] /= self.S[l]
+                self.F[l] = {st.tree_node: f[st.tree_node] for st in T}
 
         return self.F, self.S
 
@@ -2509,8 +2524,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    verify()
-    # develop()
+    # verify()
+    develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
