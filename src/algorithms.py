@@ -613,8 +613,8 @@ def random_mutations(tree, num_mutations, num_labels, seed):
         f[node] = rng.randint(0, num_labels)
     return f
 
-def project_genotypes(tree, mutations):
-    genotypes = np.zeros(tree.tree_sequence.num_samples, dtype=np.uint8)
+def project_genotypes(tree, mutations, dtype=np.uint8):
+    genotypes = np.zeros(tree.tree_sequence.num_samples, dtype=dtype)
     for j, u in enumerate(tree.tree_sequence.samples()):
         while u not in mutations:
             u = tree.parent(u)
@@ -637,6 +637,7 @@ def dynamic_fitch_single_tree(tree, num_mutations=3, num_labels=3, seed=1):
     g3 = project_genotypes(tree, f3)
     A1 = fitch_sets(tree, g2)
     A2 = fitch_sets_from_mutations(tree, f1)
+
     # A3 = incremental_fitch_sets_from_mutations(tree, f1)
 
     # assert A2 == A3
@@ -1631,6 +1632,7 @@ class OldForwardAlgorithm(object):
         self.M = []
         # Number of samples directly inheriting from each mutation
         self.N = np.zeros(ts.num_nodes, dtype=int)
+        self.parent = np.zeros(ts.num_nodes, dtype=int) - 1
 
     def check_integrity(self):
         assert np.all(self.f[self.M] >= 0)
@@ -1638,114 +1640,30 @@ class OldForwardAlgorithm(object):
         index[self.M] = 0
         assert np.all(self.f[index] == -1)
 
+    def draw_tree(self, tree):
+        node_labels = {u: f"{u}  " for u in tree.nodes()}
+        for u in self.M:
+            node_labels[u] = "{} :{:.3f}".format(u, self.f[u])
+        return tree.draw(format="unicode", node_labels=node_labels)
+
     def compress(self, tree):
         self.check_integrity()
-        M = self.M
-        f = self.f
-        N = self.N
+        f_dict = get_parsimonious_mutations(tree, {u: self.f[u] for u in self.M})
+        self.f[self.M] = -1
+        self.M.clear()
+        for u, value in f_dict.items():
+            self.f[u] = value
+            self.M.append(u)
 
-        # We'd like to get rid of this sort. The order of M is determined by the
-        # topological ordering coming from the inorder traversal below. This should
-        # be sufficient here. However, it does mean that the nodes aren't in strictly
-        # time increasing order, so it's not clear where we can insert values into the
-        # array safely elsewhere. What are the exact ordering requirements here? Is
-        # there anyway we can avoid then, barring a sort? Sorting the ~50 values
-        # probably won't be a bottleneck, but it's an extra hassle.
-        M.sort(key=lambda u: tree.time(u))
-        A = [set() for _ in range(tree.num_nodes)]
-        for u in M:
-            # State of mutation is always in node set.
-            mutation_state = f[u]
-            A[u].add(mutation_state)
-            # Find parent state
+        self.N[:] = 0
+        for u in self.M:
+            self.N[u] = tree.num_samples(u)
+        for u in self.M:
             v = tree.parent(u)
-            while v != -1 and f[v] == -1:
-                v = tree.parent(v)
-            if v != -1:
-                parent_state = f[v]
-                u = tree.parent(u)
-                while u != -1:
-                    child_sets = []
-                    for v in tree.children(u):
-                        # If the set for a given child is empty, then we know it inherits
-                        # directly from the parent state and must be a singleton set.
-                        if len(A[v]) == 0:
-                            child_sets.append({parent_state})
-                        else:
-                            child_sets.append(A[v])
-                    A[u] = set.intersection(*child_sets)
-                    if len(A[u]) == 0:
-                        A[u] = set.union(*child_sets)
-                    u = tree.parent(u)
-
-        print({u: f[u] for u in M})
-        A2 = fitch_sets_from_mutations(tree, {u: f[u] for u in M})
-        print("HERE")
-        print(tree.draw(format="unicode", node_labels={u: str(u) + str(A[u]) + "  " for u in tree.nodes()}))
-        print(tree.draw(format="unicode", node_labels={u: str(A2[u]) + " " for u in tree.nodes()}))
-        # print(A)
-        # print(A2)
-        # FIXME There's something very strange happening here. It looks like the version
-        # of the algorithm we have in here for computing A is incorrect, as it disagrees
-        # with the fitch_sets_from_mutations implementation, and it does appear to be
-        # including values in the Fitch set at mutation nodes that shouldn't be included.
-        # That is, we're assuming that the mutation value is always in the Fitch set,
-        # which isn't true. The weird thing is though, when we substitute in the correct
-        # Fitch sets, we get the wrong value out at the end of the algorithm! So, there
-        # must be some error in the mutation mapping phase below which is being caught
-        # out by this.
-        assert A == A2
-        # A = A2
-        f_dict = get_parsimonious_mutations(tree, {u: f[u] for u in M})
-
-        f_copy = f.copy()
-        f[:] = -1
-        M.clear()
-
-        old_state = f_copy[tree.root]
-        new_state = list(A[tree.root])[0]
-        f[tree.root] = new_state
-        M.append(tree.root)
-        stack = [(tree.root, old_state, new_state)]
-        while len(stack) > 0:
-            u, old_state, new_state = stack.pop()
-            # print("VISIT", u, old_state, new_state)
-            for v in tree.children(u):
-                old_child_state = old_state
-                if f_copy[v] != -1:
-                    old_child_state = f_copy[v]
-                if len(A[v]) > 0:
-                    new_child_state = new_state
-                    if new_state not in A[v]:
-                        new_child_state = list(A[v])[0]
-                        f[v] = new_child_state
-                        M.append(v)
-                    stack.append((v, old_child_state, new_child_state))
-                else:
-                    if old_child_state != new_state:
-                        f[v] = old_child_state
-                        M.append(v)
-
-                    # print("SKIP", v, old_child_state, new_state)
-
-        # print("HERE")
-        # print(f_dict)
-        # print({u: f[u] for u in M})
-        # assert f_dict == {u: f[u] for u in M}
-        assert np.all(f[M] >= 0)
-
-        N[:] = 0
-        for u in M:
-            N[u] = tree.num_samples(u)
-        for u in M:
-            v = tree.parent(u)
-            while v != tskit.NULL and f[v] == -1:
+            while v != tskit.NULL and self.f[v] == -1:
                 v = tree.parent(v)
             if v != tskit.NULL:
-                N[v] -= N[u]
-
-        self.check_integrity()
-
+                self.N[v] -= self.N[u]
 
     def run(self, h, alleles):
         n = self.ts.num_samples
@@ -1753,6 +1671,7 @@ class OldForwardAlgorithm(object):
         S = self.S
         M = self.M
         N = self.N
+        parent = self.parent
 
         for u in self.ts.samples():
             f[u] = 1 / n
@@ -1762,30 +1681,54 @@ class OldForwardAlgorithm(object):
         for (left, right), edges_out, edges_in in self.ts.edge_diffs():
             # print("start", left, right, M)
             self.check_integrity()
-            # before = draw_tree(tree, f)
+            g1 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
+
+            before = self.draw_tree(tree)
             for edge in edges_out:
+                # print("REMOVE", edge)
                 u = edge.child
                 if f[u] == -1:
+                    # Make sure the subtree we're detaching has an f-value at the root.
                     while f[u] == -1:
-                        u = tree.parent(u)
+                        u = parent[u]
                     f[edge.child] = f[u]
                     M.append(edge.child)
+                parent[edge.child] = -1
             self.check_integrity()
 
             for edge in edges_in:
-                if f[edge.parent] == -1:
-                    f[edge.parent] = f[edge.child]
-                    M.append(edge.parent)
-                if f[edge.parent] == f[edge.child]:
-                    f[edge.child] = -1
-                    M.remove(edge.child)
+                # print("INSERT", edge)
+                parent[edge.child] = edge.parent
+
+                if parent[edge.parent] == -1:
+                    # Grafting onto a new root.
+                    if f[edge.parent] == -1:
+                        f[edge.parent] = f[edge.child]
+                        M.append(edge.parent)
+                    if f[edge.parent] == f[edge.child]:
+                        f[edge.child] = -1
+                        M.remove(edge.child)
+                else:
+                    # Grafting into an existing subtree.
+                    u = edge.parent
+                    while f[u] == -1:
+                        u = parent[u]
+                    assert u != -1
+                    if f[u] == f[edge.child]:
+                        f[edge.child] = -1
+                        M.remove(edge.child)
+
             self.check_integrity()
 
             tree.next()
+            g2 = project_genotypes(tree, {u: f[u] for u in M}, dtype=np.float64)
             # print("NEW TREE")
-            # after = draw_tree(tree, f)
+            # after = self.draw_tree(tree)
             # for l1, l2 in zip(before.splitlines(), after.splitlines()):
             #     print(l1, "|", l2)
+            # print(g1)
+            # print(g2)
+            assert np.all(g1 == g2)
 
             for site in tree.sites():
                 l = site.id
@@ -2295,14 +2238,15 @@ def verify_tree_algorithm(ts):
 
 def verify_worker(work):
     n, length = work
-    ts = msprime.simulate(n, recombination_rate=0, mutation_rate=2,
+    ts = msprime.simulate(
+        n, recombination_rate=0.1, mutation_rate=2,
             random_seed=12, length=length)
     verify_tree_algorithm(ts)
-    return ts.num_samples, ts.num_sites
+    return ts.num_samples, ts.num_sites, ts.num_trees
 
 
 def verify():
-    work = itertools.product([3, 5, 20, 50], [1, 10, 100, 500])
+    work = itertools.product([3, 5, 20, 50], [1, 10, 100])
     # for w in work:
     #     print("Verify ", w)
     #     verify_worker(w)
@@ -2310,8 +2254,8 @@ def verify():
     with concurrent.futures.ProcessPoolExecutor() as executor:
         future_to_work = {executor.submit(verify_worker, w): w for w in work}
         for future in concurrent.futures.as_completed(future_to_work):
-            n, m = future.result()
-            print("Verify n =", n, "num_sites =", m)
+            n, m, t = future.result()
+            print("Verify n =", n, "num_sites =", m, "num_trees", t, flush=True)
 
 def decode_ts_matrix(ts, F_tree):
     """
@@ -2368,7 +2312,7 @@ def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
     ts = msprime.simulate(
-        8, recombination_rate=1, mutation_rate=2, random_seed=13, length=2)
+        8, recombination_rate=1, mutation_rate=3, random_seed=13, length=2)
     print("num_trees = ", ts.num_trees)
     # ts = jukes_cantor(ts, 200, 0.6, seed=1, multiple_per_node=False)
 
@@ -2403,7 +2347,6 @@ def develop():
     print(St)
     assert np.allclose(S, St)
     assert np.allclose(F, Ft)
-
 
     log_prob = np.log(np.sum(F[:, -1])) - np.sum(np.log(S))
     print("log prob = ", log_prob)
@@ -2462,8 +2405,8 @@ def develop():
 def main():
     np.set_printoptions(linewidth=1000)
 
-    # verify()
-    develop()
+    verify()
+    # develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
