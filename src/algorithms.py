@@ -2525,11 +2525,27 @@ def main():
     np.set_printoptions(linewidth=1000)
 
     # verify()
-    develop()
+    # develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
 
+    H = np.array([
+        [0,0,0,0,0,],
+        [0,0,1,0,0,],
+        [0,0,1,0,0,],
+        [0,0,1,0,0,],
+    ])
+    n, m = H.shape
+    h = np.zeros(m, dtype=np.uint8)
+    rho = np.zeros(m) + 0.125
+    mu = np.zeros(m) + 0.0125
+    alleles = [[0, 1] for _ in range(m)]
+    rho[0] = 0
+    # F, S = ls_forward_matrix(h, alleles, H, rho, mu)
+    F = ls_forward_matrix_unscaled(h, H, rho, mu)
+
+    print(F)
 
 if __name__ == "__main__":
     main()
