@@ -8,10 +8,20 @@ import pathlib
 import concurrent.futures
 import functools
 import gzip
+import time
+import sys
+
+sys.path.insert(0, "../tskit/python") # TMP
+import _tskit
 
 import msprime
 import tskit
 import numpy as np
+import pandas as pd
+import matplotlib
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 datadir = pathlib.Path("data")
 bulk_datadir = datadir / "bulk__NOBACKUP__"
@@ -91,9 +101,63 @@ def check_simulations():
         assert np.array_equal(panel_ts.tables.sites.position, queries_ts.tables.sites.position)
         print(n, panel_ts.num_sites, queries_ts.num_sites)
 
+def benchmark_tskit(panel_ts, queries_ts, num_queries=2):
+    H = queries_ts.genotype_matrix().T
+    m = panel_ts.num_sites
+    recombination_rate = np.zeros(m) + 0.125
+    mutation_rate = np.zeros(m) + 0.0125
+    ls_hmm = _tskit.LsHmm(
+        panel_ts.ll_tree_sequence,
+        recombination_rate=recombination_rate,
+        mutation_rate=mutation_rate, precision=10)
+    num_values = np.zeros(num_queries)
+    cpu_time = np.zeros(num_queries)
+    for j in range(num_queries):
+        before = time.perf_counter()
+        result = ls_hmm.forward_matrix(H[j], True)
+        cpu_time[j] = time.perf_counter() - before
+        num_values[j] = np.mean(result)
+    return {
+        "num_values": np.mean(num_values), "cpu_time": np.mean(cpu_time),
+        "num_sites": panel_ts.num_sites, "num_samples": panel_ts.num_samples}
+
+def run_benchmarks():
+    rows = []
+    for n in panel_sizes:
+        panel_ts = tskit.load(str(bulk_datadir / "{}_panel.trees".format(n)))
+        queries_ts = tskit.load(str(bulk_datadir / "{}_queries.trees".format(n)))
+        result = benchmark_tskit(panel_ts, queries_ts, 5)
+        rows.append(result)
+        print(result)
+        df = pd.DataFrame(rows)
+        df.to_csv("data/benchmark.csv")
+        # print(df)
+        # df.
+
+def plot_benchmarks():
+    df = pd.read_csv("data/benchmark.csv")
+    df.cpu_time /= df.num_sites
+    # Convert to microseconds
+    df.cpu_time *= 1e6
+
+    print(df)
+    plt.semilogx(df.num_samples, df.cpu_time, "-o")
+    plt.ylabel("CPU Time (microseconds)")
+    plt.xlabel("Reference panel size")
+    plt.savefig("cpu_time.png")
+    plt.clf()
+
+    plt.semilogx(df.num_samples, df.num_values, "-o")
+    plt.ylabel("Mean probabilities on tree")
+    plt.xlabel("Reference panel size")
+    plt.savefig("num_values.png")
+
+
 def main():
-    run_simulations()
+    # run_simulations()
     # check_simulations()
+    run_benchmarks()
+    # plot_benchmarks()
 
 if __name__ == "__main__":
     main()
