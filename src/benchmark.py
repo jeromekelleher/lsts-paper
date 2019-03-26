@@ -156,8 +156,8 @@ def plot_benchmarks():
 def main():
     # run_simulations()
     # check_simulations()
-    run_benchmarks()
-    # plot_benchmarks()
+    # run_benchmarks()
+    plot_benchmarks()
 
 if __name__ == "__main__":
     main()
