@@ -101,7 +101,7 @@ def check_simulations():
         assert np.array_equal(panel_ts.tables.sites.position, queries_ts.tables.sites.position)
         print(n, panel_ts.num_sites, queries_ts.num_sites)
 
-def benchmark_tskit(panel_ts, queries_ts, num_queries=2):
+def benchmark_similar_haplotypes(panel_ts, queries_ts, num_queries=2):
     H = queries_ts.genotype_matrix().T
     m = panel_ts.num_sites
     recombination_rate = np.zeros(m) + 0.125
@@ -121,18 +121,48 @@ def benchmark_tskit(panel_ts, queries_ts, num_queries=2):
         "num_values": np.mean(num_values), "cpu_time": np.mean(cpu_time),
         "num_sites": panel_ts.num_sites, "num_samples": panel_ts.num_samples}
 
+
+def benchmark_random_haplotypes(panel_ts, num_queries=2, seed=1):
+    np.random.seed(seed)
+    m = panel_ts.num_sites
+    recombination_rate = np.zeros(m) + 0.125
+    mutation_rate = np.zeros(m) + 0.0125
+    ls_hmm = _tskit.LsHmm(
+        panel_ts.ll_tree_sequence,
+        recombination_rate=recombination_rate,
+        mutation_rate=mutation_rate, precision=10)
+    num_values = np.zeros(num_queries)
+    cpu_time = np.zeros(num_queries)
+    for j in range(num_queries):
+        h = np.random.randint(0, 2, size=m, dtype=np.uint8)
+        before = time.perf_counter()
+        result = ls_hmm.forward_matrix(h, True)
+        cpu_time[j] = time.perf_counter() - before
+        num_values[j] = np.mean(result)
+    return {
+        "num_values": np.mean(num_values), "cpu_time": np.mean(cpu_time),
+        "num_sites": panel_ts.num_sites, "num_samples": panel_ts.num_samples}
+
+
+
 def run_benchmarks():
     rows = []
+    num_replicates = 5
     for n in panel_sizes:
         panel_ts = tskit.load(str(bulk_datadir / "{}_panel.trees".format(n)))
         queries_ts = tskit.load(str(bulk_datadir / "{}_queries.trees".format(n)))
-        result = benchmark_tskit(panel_ts, queries_ts, 5)
-        rows.append(result)
+        result = benchmark_random_haplotypes(panel_ts, num_replicates)
+        result["type"] = "random"
         print(result)
+        rows.append(result)
+        result = benchmark_similar_haplotypes(panel_ts, queries_ts, num_replicates)
+        result["type"] = "similar"
+        print(result)
+        rows.append(result)
+
         df = pd.DataFrame(rows)
         df.to_csv("data/benchmark.csv")
-        # print(df)
-        # df.
+
 
 def plot_benchmarks():
     df = pd.read_csv("data/benchmark.csv")
@@ -140,17 +170,23 @@ def plot_benchmarks():
     # Convert to microseconds
     df.cpu_time *= 1e6
 
-    print(df)
-    plt.semilogx(df.num_samples, df.cpu_time, "-o")
+    df_random = df.query("type == 'random'")
+    df_similar= df.query("type == 'similar'")
+    plt.semilogx(df_random.num_samples, df_random.cpu_time, "-o", label="Random haplotypes")
+    plt.semilogx(df_similar.num_samples, df_similar.cpu_time, "-o", label="Similar haplotypes")
     plt.ylabel("CPU Time (microseconds)")
     plt.xlabel("Reference panel size")
+    plt.legend()
     plt.savefig("cpu_time.png")
     plt.clf()
 
-    plt.semilogx(df.num_samples, df.num_values, "-o")
+    plt.semilogx(df_random.num_samples, df_random.num_values, "-o", label="Random haplotypes")
+    plt.semilogx(df_similar.num_samples, df_similar.num_values, "-o", label="Similar haplotypes")
     plt.ylabel("Mean probabilities on tree")
     plt.xlabel("Reference panel size")
+    plt.legend()
     plt.savefig("num_values.png")
+    plt.clf()
 
 
 def main():
