@@ -1034,6 +1034,9 @@ def ls_forward_matrix_unscaled(h, H, rho, mu):
             p_e = mu[l]
             if H[j, l] == h[l]:
                 p_e = 1 - (A - 1) * mu[l]
+            # Iversonian withinout branching
+            p_e2 = mu[l] - int(H[j, l] == h[l]) * (2 * mu[l] - 1)
+            assert p_e2 == p_e
             f[j] = p_t * p_e
         F[:, l] = f
     return F
@@ -1847,6 +1850,7 @@ class ForwardAlgorithm(object):
                     if h[l] == state[v]:
                         p_e = 1 - (len(alleles[l]) - 1) * self.mu[l]
                     f[u] = round(p_t * p_e, self.precision)
+                    # f[u] = p_t * p_e
                     assert f[u] >= 0
 
                 # Unset the states
@@ -2399,8 +2403,9 @@ def plot_encoding_efficiency():
                 n, recombination_rate=1, mutation_rate=2, random_seed=13, length=L)
             ts = jukes_cantor(ts, L * 10, 0.05, seed=1, multiple_per_node=False)
 
-            # rho = np.zeros(ts.num_sites) + 0.1
-            # mu = np.zeros(ts.num_sites) + 0.01
+            rho = np.zeros(ts.num_sites) + 0.1
+            # rho = np.zeros(ts.num_sites)
+            mu = np.zeros(ts.num_sites) + 0.01
             # H = ts.genotype_matrix().T
             # h = H[0].copy()
             # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
@@ -2408,9 +2413,9 @@ def plot_encoding_efficiency():
             alleles = [var.alleles for var in ts.variants()]
             h = np.zeros(ts.num_sites, dtype=int)
             h[ts.num_sites // 2:] = 1
-            np.random.seed(1)
-            rho = np.random.random(ts.num_sites)
-            mu = np.random.random(ts.num_sites) #* 0.1
+            # np.random.seed(1)
+            # rho = np.random.random(ts.num_sites)
+            # mu = np.random.random(ts.num_sites) #* 0.1
 
             rho[0] = 0
             Ft, St = ls_forward_tree(h, alleles, ts, rho, mu, precision=10)
@@ -2431,7 +2436,7 @@ def develop():
     # ts = msprime.simulate(250, recombination_rate=1, mutation_rate=2,
     #         random_seed=2, length=100)
     ts = msprime.simulate(
-        8, recombination_rate=1, mutation_rate=3, random_seed=13, length=2)
+        118, recombination_rate=3, mutation_rate=17, random_seed=13, length=1)
     print("num_trees = ", ts.num_trees)
     # ts = jukes_cantor(ts, 200, 0.6, seed=1, multiple_per_node=False)
 
@@ -2450,29 +2455,54 @@ def develop():
     # h[ts.num_sites // 2:] = H[-1, ts.num_sites // 2:]
     h = H[-1]
     # H = H[:-1]
-    rho = np.zeros(ts.num_sites) + 0.1
-    mu = np.zeros(ts.num_sites) + 0.01
+    rho = np.zeros(ts.num_sites)#  + 0.1
+    mu = np.zeros(ts.num_sites) + 0.25
 
     rho[0] = 0
     model = ls_hmm(H, rho, mu)
 
     # F = ls_forward_matrix_unscaled(h, H, rho, mu)
+    # print(F)
+    # distinct = [len(set(F[:, l])) for l in range(m)]
+    # print(distinct)
     F, S = ls_forward_matrix(h, alleles, H, rho, mu)
-    # Ft, St = ls_forward_tree_naive(h, alleles, ts, rho, mu)
-    Ft, St = ls_forward_tree(h, alleles, ts, rho, mu)
-    Ft = decode_ts_matrix(ts, Ft)
+    # print("Scaled")
+    # print(F)
 
-    # print(S)
-    # print(St)
-    assert np.allclose(S, St)
-    assert np.allclose(F, Ft)
+    # Ft, St = ls_forward_tree_naive(h, alleles, ts, rho, mu)
+    Ft, St = ls_forward_tree(h, alleles, ts, rho, mu, precision=6)
+    # N = [len(f) for f in Ft]
+    # print(N)
+
+    Ft = decode_ts_matrix(ts, Ft)
+    # plt.plot(N)
+    # plt.show()
+
+    S_diff = np.abs(S - St)
+    F_diff = np.max(np.abs(F - Ft), axis=0)
+    # print("F_diff", F_diff.shape, m)
+    # print(F_diff)
+    plt.plot(S_diff)
+    plt.plot(F_diff)
+    plt.show()
+
+    # print(
+    # print(np.abs(F - Ft))
+    # # print(S)
+    # # print(St)
+    # assert np.allclose(S, St)
+    # assert np.allclose(F, Ft)
 
     log_prob = np.log(np.sum(F[:, -1])) - np.sum(np.log(S))
-    print("log prob = ", log_prob)
-    print("prob = ", np.exp(-log_prob))
+    print("log prob1 = ", log_prob)
 
-    F *= np.cumprod(S)
-    print("P = ", model.evaluate(h), np.sum(F[:, -1])) #/ np.prod(S))
+    log_prob = np.log(np.sum(Ft[:, -1])) - np.sum(np.log(St))
+    print("log prob2 = ", log_prob)
+
+    # print("prob = ", np.exp(-log_prob))
+
+    # F *= np.cumprod(S)
+    # print("P = ", model.evaluate(h), np.sum(F[:, -1])) #/ np.prod(S))
 
 #     # Only works for binary mutations.
 
@@ -2525,27 +2555,11 @@ def main():
     np.set_printoptions(linewidth=1000)
 
     # verify()
-    # develop()
+    develop()
     # plot_encoding_efficiency()
 
     # incremental_fitch_dev()
 
-    H = np.array([
-        [0,0,0,0,0,],
-        [0,0,1,0,0,],
-        [0,0,1,0,0,],
-        [0,0,1,0,0,],
-    ])
-    n, m = H.shape
-    h = np.zeros(m, dtype=np.uint8)
-    rho = np.zeros(m) + 0.125
-    mu = np.zeros(m) + 0.0125
-    alleles = [[0, 1] for _ in range(m)]
-    rho[0] = 0
-    # F, S = ls_forward_matrix(h, alleles, H, rho, mu)
-    F = ls_forward_matrix_unscaled(h, H, rho, mu)
-
-    print(F)
 
 if __name__ == "__main__":
     main()
