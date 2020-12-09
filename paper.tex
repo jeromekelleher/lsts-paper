@@ -93,10 +93,14 @@ recombination weights. Need to discuss this and put some bounds on what
 the weights really mean and how they interplay between mutation and
 recombination.]
 
+[NOTE: There is a problem with this! For $\mu = 1$ and number of alleles
+$> 2$ we'll get nonsensical probability values. Should try to work back
+from what Lunter has to get a better formulation.]
+
 The emission probability is given by
 \begin{equation}\label{eq-mut-proba}
 E(j, \ell) = \begin{cases}
-1 - \mu_\ell / (a_\ell - 1)  & \text{if $H_{j, \ell} = h_{\ell}$} \\
+1 - \mu_\ell (a_\ell - 1)  & \text{if $H_{j, \ell} = h_{\ell}$} \\
 \mu_\ell & \text{otherwise}
 \end{cases}
 \end{equation}
